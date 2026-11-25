@@ -760,6 +760,8 @@ export function VoiceRoomStage({
           { onConflict: 'channel_id,user_id' }
         );
         notifyServerPresenceChanged();
+        // Play the join cue once voice presence has been successfully registered.
+        playSound('join_call');
 
         const rtcChannel = supabase.channel(`dompic-rtc:${channel.id}`);
         signalChannelRef.current = rtcChannel;

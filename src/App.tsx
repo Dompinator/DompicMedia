@@ -244,7 +244,7 @@ export default function App() {
         <div className="min-h-screen bg-[#0B0D11] flex items-center justify-center">
           <Loader2 className="w-6 h-6 animate-spin text-[#5B7CFA]" />
         </div>
-      ) : !supabaseReady || forceSetup ? (
+      ) : forceSetup ? (
         <SupabaseSetupScreen
           onConnected={() => {
             setForceSetup(false);

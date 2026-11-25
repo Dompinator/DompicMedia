@@ -1,0 +1,6 @@
+{
+  "name": "DompicMEDIA — Social & Community Servers",
+  "description": "A unified dark-first social feed, private messaging, and real-time community server platform with voice and video channels.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -883,6 +883,12 @@ CREATE POLICY "Members join/update own voice presence" ON public.voice_channel_p
 CREATE POLICY "Members update own voice state" ON public.voice_channel_participants FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Members leave voice channel" ON public.voice_channel_participants FOR DELETE USING (auth.uid() = user_id);
 
+-- DATA API TABLE PRIVILEGES
+-- RLS policies above still control which profile rows each role can access.
+GRANT USAGE ON SCHEMA public TO anon, authenticated;
+GRANT SELECT ON TABLE public.profiles TO anon, authenticated;
+GRANT INSERT, UPDATE ON TABLE public.profiles TO authenticated;
+
 -- REALTIME PUBLICATION
 ALTER PUBLICATION supabase_realtime ADD TABLE
   public.posts,

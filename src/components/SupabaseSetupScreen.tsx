@@ -55,6 +55,13 @@ export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScree
               </p>
             </div>
           </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="inline-flex shrink-0 items-center justify-center rounded-lg bg-blue-600 hover:bg-blue-700 px-5 py-2.5 text-sm font-semibold text-white shadow-lg transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 focus:ring-offset-[#0B0D11]"
+          >
+            Back
+          </button>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -68,15 +75,7 @@ export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScree
                 <KeyRound className="w-4 h-4 text-[#5B7CFA]" />
                 <span>Public Client Credentials</span>
               </div>
-              <button
-                type="button"
-                onClick={onClose}
-                aria-label="Back to login"
-                title="Back to login"
-                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/25 bg-[#202633] text-white hover:bg-[#34415B] transition-colors"
-              >
-                <span className="text-2xl font-semibold leading-none" aria-hidden="true">×</span>
-              </button>
+
             </div>
 
             <div>

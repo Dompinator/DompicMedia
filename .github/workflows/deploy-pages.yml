@@ -40,3 +40,5 @@ jobs:
           publish_dir: ./dist
           publish_branch: gh-pages
           force_orphan: true
+
+# Re-publish the site after the previous transient GitHub Pages HTTP 500.

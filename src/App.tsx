@@ -250,6 +250,7 @@ export default function App() {
             setForceSetup(false);
             bootstrap();
           }}
+          onClose={() => setForceSetup(false)}
         />
       ) : !sessionUserId || !currentUser ? (
         <AuthView

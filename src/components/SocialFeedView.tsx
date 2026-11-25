@@ -243,7 +243,22 @@ export function SocialFeedView({
       setPendingFiles([]);
       setShowEmojiPicker(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to publish post.');
+      // Supabase/PostgREST errors are plain objects, not always JavaScript Error instances.
+      // Preserve their useful database diagnostics instead of hiding them behind a generic message.
+      const supabaseError = err as {
+        message?: unknown;
+        details?: unknown;
+        hint?: unknown;
+        code?: unknown;
+      };
+      const parts = [
+        typeof supabaseError?.message === 'string' ? supabaseError.message : null,
+        typeof supabaseError?.details === 'string' ? supabaseError.details : null,
+        typeof supabaseError?.hint === 'string' ? `Hint: ${supabaseError.hint}` : null,
+        typeof supabaseError?.code === 'string' ? `Code: ${supabaseError.code}` : null,
+      ].filter((part): part is string => Boolean(part));
+      setError(parts.length > 0 ? parts.join(' — ') : err instanceof Error ? err.message : 'Failed to publish post. Check the browser console for details.');
+      console.error('DompicMEDIA post publishing failed:', err);
     } finally {
       setPosting(false);
     }

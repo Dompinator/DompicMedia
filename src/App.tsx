@@ -30,6 +30,7 @@ export default function App() {
   const [booting, setBooting] = useState(true);
   const [supabaseReady, setSupabaseReady] = useState(false);
   const [forceSetup, setForceSetup] = useState(false);
+  const [authLoadError, setAuthLoadError] = useState<string | null>(null);
 
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
@@ -181,9 +182,11 @@ export default function App() {
           await loadUserWorkspace(uid);
         } catch (err) {
           console.error('DompicMEDIA account loading failed:', err);
+          setAuthLoadError(err instanceof Error ? err.message : 'Could not load your account.');
           setCurrentUser(null);
         }
       } else {
+        setAuthLoadError(null);
         setCurrentUser(null);
         setServers([]);
         setView({ kind: 'feed' });
@@ -250,6 +253,7 @@ export default function App() {
         />
       ) : !sessionUserId || !currentUser ? (
         <AuthView
+          externalError={authLoadError}
           onOpenSetup={() => {
             clearBrowserSupabaseConfig();
             setForceSetup(true);

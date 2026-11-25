@@ -109,6 +109,7 @@ async function runExpiredAttachmentCleanup(): Promise<{
   checked: number;
   deleted: number;
   failed: number;
+  storageBytes?: number;
   skippedReason?: string;
 }> {
   const admin = createAdminClient();
@@ -116,32 +117,71 @@ async function runExpiredAttachmentCleanup(): Promise<{
     return { checked: 0, deleted: 0, failed: 0, skippedReason: 'SUPABASE_SERVICE_ROLE_KEY not configured' };
   }
 
+  // Calculate actual Storage usage across every bucket. If this check fails,
+  // fail closed: never delete anything based on an unknown usage figure.
+  let storageBytes = 0;
+  const pageSize = 1000;
+  for (let offset = 0; ; offset += pageSize) {
+    const { data: objects, error: storageErr } = await admin
+      .schema('storage')
+      .from('objects')
+      .select('metadata')
+      .order('id', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (storageErr) {
+      console.error('[AttachmentCleanup] Storage usage query error:', storageErr.message);
+      return { checked: 0, deleted: 0, failed: 1, skippedReason: 'Could not safely calculate Storage usage' };
+    }
+
+    for (const object of objects || []) {
+      const size = Number((object.metadata as Record<string, unknown> | null)?.size ?? 0);
+      if (Number.isFinite(size) && size > 0) storageBytes += size;
+    }
+
+    if (!objects || objects.length < pageSize) break;
+  }
+
+  const ONE_GB = 1024 * 1024 * 1024;
+  if (storageBytes <= ONE_GB) {
+    return {
+      checked: 0,
+      deleted: 0,
+      failed: 0,
+      storageBytes,
+      skippedReason: 'Storage usage is at or below 1 GB; no files are deleted',
+    };
+  }
+
+  const cutoffIso = new Date(Date.now() - 2 * 30 * 24 * 60 * 60 * 1000).toISOString();
   const nowIso = new Date().toISOString();
-  const { data: expiredRows, error: queryErr } = await admin
+  const { data: oldRows, error: queryErr } = await admin
     .from('attachments')
     .select('id, storage_bucket, storage_path, cleanup_attempts')
-    .lte('expires_at', nowIso)
+    .in('context_type', ['dm', 'channel'])
+    .lt('uploaded_at', cutoffIso)
     .is('deleted_at', null)
     .lt('cleanup_attempts', 5)
-    .limit(100);
+    .limit(500);
 
   if (queryErr) {
     console.error('[AttachmentCleanup] Query error:', queryErr.message);
-    return { checked: 0, deleted: 0, failed: 1 };
+    return { checked: 0, deleted: 0, failed: 1, storageBytes };
   }
 
-  if (!expiredRows || expiredRows.length === 0) {
-    return { checked: 0, deleted: 0, failed: 0 };
+  if (!oldRows || oldRows.length === 0) {
+    return { checked: 0, deleted: 0, failed: 0, storageBytes };
   }
 
   let deleted = 0;
   let failed = 0;
-
   const byBucket = new Map<string, Array<{ id: string; path: string; attempts: number }>>();
-  for (const row of expiredRows) {
+
+  for (const row of oldRows) {
     if (!row.storage_path) {
-      await admin.from('attachments').update({ deleted_at: nowIso }).eq('id', row.id);
-      deleted += 1;
+      const { error } = await admin.from('attachments').update({ deleted_at: nowIso }).eq('id', row.id);
+      if (error) failed += 1;
+      else deleted += 1;
       continue;
     }
     const list = byBucket.get(row.storage_bucket) || [];
@@ -150,8 +190,9 @@ async function runExpiredAttachmentCleanup(): Promise<{
   }
 
   for (const [bucket, items] of byBucket.entries()) {
-    const paths = items.map((i) => i.path);
+    const paths = items.map((item) => item.path);
     const { error: removeErr } = await admin.storage.from(bucket).remove(paths);
+
     if (removeErr) {
       console.error(`[AttachmentCleanup] Storage remove error (${bucket}):`, removeErr.message);
       for (const item of items) {
@@ -165,7 +206,7 @@ async function runExpiredAttachmentCleanup(): Promise<{
         failed += 1;
       }
     } else {
-      const ids = items.map((i) => i.id);
+      const ids = items.map((item) => item.id);
       const { error: markErr } = await admin
         .from('attachments')
         .update({
@@ -174,6 +215,7 @@ async function runExpiredAttachmentCleanup(): Promise<{
           last_cleanup_error: null,
         })
         .in('id', ids);
+
       if (markErr) {
         console.error('[AttachmentCleanup] Mark deleted error:', markErr.message);
         failed += items.length;
@@ -183,7 +225,7 @@ async function runExpiredAttachmentCleanup(): Promise<{
     }
   }
 
-  return { checked: expiredRows.length, deleted, failed };
+  return { checked: oldRows.length, deleted, failed, storageBytes };
 }
 
 interface RelayPeer {
@@ -364,7 +406,7 @@ async function startServer() {
     return res.json({ iceServers, turnConfigured, builtinRelayAvailable: true });
   });
 
-  // Short-lived signed URL for private chat attachments (enforces access + 24-hour expiration)
+  // Short-lived signed URL for private chat attachments (access is checked; file retention is handled separately).
   app.post('/api/attachments/signed-url', async (req: Request, res: Response) => {
     const token = extractBearer(req);
     if (!token) {
@@ -403,10 +445,6 @@ async function startServer() {
     }
 
     if (att.deleted_at || !att.storage_path) {
-      return res.status(410).json({ error: 'Attachment expired' });
-    }
-
-    if (att.expires_at && new Date(att.expires_at).getTime() <= Date.now()) {
       return res.status(410).json({ error: 'Attachment expired' });
     }
 

@@ -19,8 +19,6 @@ export function StartupOverlay() {
     const playStartupAfterGesture = () => {
       if (startupPlayed) return;
       startupPlayed = true;
-      window.removeEventListener('pointerdown', playStartupAfterGesture, true);
-      window.removeEventListener('keydown', playStartupAfterGesture, true);
       if (getSoundPreference()) {
         window.setTimeout(() => playSound('startup'), 80);
       }
@@ -30,13 +28,26 @@ export function StartupOverlay() {
     window.addEventListener('keydown', playStartupAfterGesture, true);
 
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const timer = window.setTimeout(() => setVisible(false), reducedMotion ? 400 : 2050);
+    let timer: number | undefined;
+
+    const startWebsite = () => {
+      if (startupPlayed) return;
+      playStartupAfterGesture();
+      // Keep the blurred startup screen visible until the user starts the site.
+      // The actual intro animation then runs for its full duration.
+      timer = window.setTimeout(() => setVisible(false), reducedMotion ? 400 : 2050);
+    };
+
+    window.removeEventListener('pointerdown', playStartupAfterGesture, true);
+    window.removeEventListener('keydown', playStartupAfterGesture, true);
+    window.addEventListener('pointerdown', startWebsite, { capture: true, once: true });
+    window.addEventListener('keydown', startWebsite, { capture: true, once: true });
 
     return () => {
       active = false;
-      window.clearTimeout(timer);
-      window.removeEventListener('pointerdown', playStartupAfterGesture, true);
-      window.removeEventListener('keydown', playStartupAfterGesture, true);
+      if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', startWebsite, true);
+      window.removeEventListener('keydown', startWebsite, true);
     };
   }, []);
 

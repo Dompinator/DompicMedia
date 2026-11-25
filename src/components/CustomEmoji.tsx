@@ -8,7 +8,7 @@ export function resolveEmojiUrl(shortcode: string, globalEmojis: GlobalEmoji[]):
   const match = globalEmojis.find((e) => e.shortcode === clean);
   if (match?.public_url) return match.public_url;
   if ((BUILTIN_EMOJIS as readonly string[]).includes(clean)) {
-    return `/emojis/${clean}.png`;
+    return `${import.meta.env.BASE_URL}emojis/${clean}.png`;
   }
   return null;
 }
@@ -123,7 +123,7 @@ export function EmojiPicker({
   const allShortcodes = useMemo(() => {
     const map = new Map<string, { shortcode: string; label: string; url: string }>();
     for (const code of BUILTIN_EMOJIS) {
-      map.set(code, { shortcode: code, label: code, url: `/emojis/${code}.png` });
+      map.set(code, { shortcode: code, label: code, url: `${import.meta.env.BASE_URL}emojis/${code}.png` });
     }
     for (const ge of globalEmojis) {
       map.set(ge.shortcode, {

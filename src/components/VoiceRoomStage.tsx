@@ -127,6 +127,7 @@ export function VoiceRoomStage({
   const [videoEnabled, setVideoEnabled] = useState(false);
   const [screenSharing, setScreenSharing] = useState(false);
   const [transportMode, setTransportMode] = useState<'p2p' | 'relay'>('p2p');
+  const [relayAvailable, setRelayAvailable] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [remoteStreams, setRemoteStreams] = useState<RemoteStreamEntry[]>([]);
   const [relayFrames, setRelayFrames] = useState<Record<string, string>>({});
@@ -135,6 +136,7 @@ export function VoiceRoomStage({
   const mutedRef = useRef(false);
   const videoEnabledRef = useRef(false);
   const transportModeRef = useRef<'p2p' | 'relay'>('p2p');
+  const relayAvailableRef = useRef(false);
   const cleanedUpRef = useRef(false);
   const accessTokenRef = useRef<string | null>(null);
 
@@ -238,6 +240,7 @@ export function VoiceRoomStage({
   }, []);
 
   const startRelayStreaming = useCallback(async () => {
+    if (!relayAvailableRef.current) return;
     if (relayWsRef.current && relayWsRef.current.readyState === WebSocket.OPEN) return;
 
     const supabase = getSupabase();
@@ -612,6 +615,7 @@ export function VoiceRoomStage({
 
       const fallbackTimer = window.setTimeout(() => {
         if (
+          relayAvailableRef.current &&
           pc.iceConnectionState !== 'connected' &&
           pc.iceConnectionState !== 'completed' &&
           transportModeRef.current === 'p2p'
@@ -648,7 +652,7 @@ export function VoiceRoomStage({
       pc.oniceconnectionstatechange = () => {
         if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
           window.clearTimeout(fallbackTimer);
-        } else if (pc.iceConnectionState === 'failed') {
+        } else if (pc.iceConnectionState === 'failed' && relayAvailableRef.current) {
           window.clearTimeout(fallbackTimer);
           setTransportMode('relay');
           startRelayStreaming();
@@ -698,15 +702,26 @@ export function VoiceRoomStage({
         const sbCfg = getActiveSupabaseConfig();
 
         if (token) {
-          const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
-          if (sbCfg) {
-            headers['x-supabase-url'] = sbCfg.supabaseUrl;
-            headers['x-supabase-anon-key'] = sbCfg.supabaseAnonKey;
-          }
-          const iceRes = await fetch('/api/ice-servers', { headers });
-          if (iceRes.ok) {
-            const iceJson = (await iceRes.json()) as { iceServers: RTCIceServer[] };
-            iceConfigRef.current = iceJson.iceServers;
+          try {
+            const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+            if (sbCfg) {
+              headers['x-supabase-url'] = sbCfg.supabaseUrl;
+              headers['x-supabase-anon-key'] = sbCfg.supabaseAnonKey;
+            }
+            const iceRes = await fetch(`${import.meta.env.BASE_URL}api/ice-servers`, { headers });
+            const isJson = iceRes.headers.get('content-type')?.includes('application/json');
+            if (iceRes.ok && isJson) {
+              const iceJson = (await iceRes.json()) as {
+                iceServers: RTCIceServer[];
+                builtinRelayAvailable?: boolean;
+              };
+              iceConfigRef.current = iceJson.iceServers;
+              const hasRelay = Boolean(iceJson.builtinRelayAvailable);
+              relayAvailableRef.current = hasRelay;
+              if (active) setRelayAvailable(hasRelay);
+            }
+          } catch {
+            // Static hosting fallback: continue with default public STUN servers
           }
         }
 
@@ -1020,15 +1035,17 @@ export function VoiceRoomStage({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={toggleTransportMode}
-            title="Switch between direct WebRTC and built-in server media relay"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#12151C] border border-white/10 hover:border-white/25 text-xs font-medium text-[#D1D5DB] whitespace-nowrap"
-          >
-            <Radio className={`w-3.5 h-3.5 ${transportMode === 'relay' ? 'text-[#5B7CFA]' : 'text-[#22C55E]'}`} />
-            <span>{transportMode === 'relay' ? 'Server Relay Active' : 'Direct WebRTC'}</span>
-          </button>
+          {relayAvailable && (
+            <button
+              type="button"
+              onClick={toggleTransportMode}
+              title="Switch between direct WebRTC and built-in server media relay"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#12151C] border border-white/10 hover:border-white/25 text-xs font-medium text-[#D1D5DB] whitespace-nowrap"
+            >
+              <Radio className={`w-3.5 h-3.5 ${transportMode === 'relay' ? 'text-[#5B7CFA]' : 'text-[#22C55E]'}`} />
+              <span>{transportMode === 'relay' ? 'Server Relay Active' : 'Direct WebRTC'}</span>
+            </button>
+          )}
 
           <button
             type="button"

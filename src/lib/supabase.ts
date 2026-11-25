@@ -1,6 +1,7 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 const STORAGE_KEY = 'vesper_public_supabase_config';
+const SUPABASE_HOST_RE = /^https:\/\/[a-z0-9-]+\.supabase\.co$/i;
 
 interface PublicSupabaseConfig {
   supabaseUrl: string;
@@ -21,6 +22,19 @@ function normalizeSupabaseUrl(raw: string): string {
     return hostMatch[1];
   }
   return trimmed;
+}
+
+function isServiceRoleKeyClient(key: string): boolean {
+  if (key.startsWith('sb_secret_')) return true;
+  try {
+    const parts = key.split('.');
+    if (parts.length !== 3) return false;
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = JSON.parse(atob(b64)) as { role?: string };
+    return json.role === 'service_role';
+  } catch {
+    return false;
+  }
 }
 
 function readBrowserSavedConfig(): PublicSupabaseConfig | null {
@@ -45,29 +59,61 @@ function readBrowserSavedConfig(): PublicSupabaseConfig | null {
   return null;
 }
 
+async function verifySupabaseDirect(cfg: PublicSupabaseConfig): Promise<PublicSupabaseConfig> {
+  if (!SUPABASE_HOST_RE.test(cfg.supabaseUrl)) {
+    throw new Error('Invalid Supabase URL. Use your Project API URL: https://<your-project-ref>.supabase.co');
+  }
+  if (isServiceRoleKeyClient(cfg.supabaseAnonKey)) {
+    throw new Error('You entered a secret/service_role key. Only your public anon/publishable key is allowed here.');
+  }
+  const res = await fetch(`${cfg.supabaseUrl}/auth/v1/settings`, {
+    headers: { apikey: cfg.supabaseAnonKey },
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error('Supabase rejected that public key. Double-check Project Settings -> API.');
+  }
+  if (!res.ok) {
+    throw new Error(`Could not reach Supabase Auth at ${cfg.supabaseUrl} (HTTP ${res.status}).`);
+  }
+  return cfg;
+}
+
 async function syncPublicConfigToServer(
   cfg: PublicSupabaseConfig,
   strict: boolean
 ): Promise<PublicSupabaseConfig> {
-  const res = await fetch('/api/config/public', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(cfg),
-  });
-  const data = (await res.json().catch(() => ({}))) as {
-    error?: string;
-    supabaseUrl?: string;
-  };
-  if (!res.ok) {
-    if (strict) {
-      throw new Error(data.error || 'Could not validate Supabase connection.');
+  try {
+    const res = await fetch(`${import.meta.env.BASE_URL}api/config/public`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    });
+    const isJson = res.headers.get('content-type')?.includes('application/json');
+    if (!isJson || res.status === 404 || res.status === 405) {
+      // Running on static hosting (e.g. GitHub Pages) without Express backend: verify directly
+      return strict ? await verifySupabaseDirect(cfg) : cfg;
     }
-    return cfg;
+    const data = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      supabaseUrl?: string;
+    };
+    if (!res.ok) {
+      if (strict) {
+        throw new Error(data.error || 'Could not validate Supabase connection.');
+      }
+      return cfg;
+    }
+    return {
+      supabaseUrl: data.supabaseUrl || cfg.supabaseUrl,
+      supabaseAnonKey: cfg.supabaseAnonKey,
+    };
+  } catch (err) {
+    if (!strict) return cfg;
+    if (err instanceof Error && err.message && !/failed to fetch/i.test(err.message)) {
+      throw err;
+    }
+    return verifySupabaseDirect(cfg);
   }
-  return {
-    supabaseUrl: data.supabaseUrl || cfg.supabaseUrl,
-    supabaseAnonKey: cfg.supabaseAnonKey,
-  };
 }
 
 export async function initSupabase(): Promise<{
@@ -86,8 +132,9 @@ export async function initSupabase(): Promise<{
   }
 
   try {
-    const res = await fetch('/api/config');
-    if (res.ok) {
+    const res = await fetch(`${import.meta.env.BASE_URL}api/config`);
+    const isJson = res.headers.get('content-type')?.includes('application/json');
+    if (res.ok && isJson) {
       const data = (await res.json()) as { supabaseUrl: string | null; supabaseAnonKey: string | null };
       if (data.supabaseUrl && data.supabaseAnonKey) {
         activeConfig = {

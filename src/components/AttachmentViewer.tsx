@@ -39,21 +39,33 @@ export function AttachmentItem({ attachment }: { attachment: AttachmentRecord })
           headers['x-supabase-anon-key'] = sbCfg.supabaseAnonKey;
         }
 
-        const res = await fetch('/api/attachments/signed-url', {
+        const res = await fetch(`${import.meta.env.BASE_URL}api/attachments/signed-url`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ attachmentId: attachment.id }),
-        });
+        }).catch(() => null);
 
         if (cancelled) return;
-        if (res.status === 410) {
+        if (res?.status === 410) {
           setExpired(true);
           setLoading(false);
           return;
         }
-        if (res.ok) {
+        const isJson = res?.headers.get('content-type')?.includes('application/json');
+        if (res?.ok && isJson) {
           const data = (await res.json()) as { signedUrl: string };
           setSignedUrl(data.signedUrl);
+          return;
+        }
+
+        // Static hosting fallback (GitHub Pages): use authenticated RLS Storage signed URL directly
+        if (attachment.storage_path) {
+          const { data: signedData } = await supabase.storage
+            .from(attachment.storage_bucket)
+            .createSignedUrl(attachment.storage_path, 60);
+          if (!cancelled && signedData?.signedUrl) {
+            setSignedUrl(signedData.signedUrl);
+          }
         }
       } catch {
         // leave null
@@ -66,7 +78,7 @@ export function AttachmentItem({ attachment }: { attachment: AttachmentRecord })
     return () => {
       cancelled = true;
     };
-  }, [attachment.id, expired]);
+  }, [attachment.id, attachment.storage_bucket, attachment.storage_path, expired]);
 
   if (expired) {
     return (

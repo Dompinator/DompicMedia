@@ -4,14 +4,25 @@ import fs from 'fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 
+const SOUND_NAMES = new Set([
+  'startup',
+  'click',
+  'leave_call',
+  'join_call',
+  'mute',
+  'camera',
+  'post',
+  'like',
+]);
+const SOUND_EXTS = new Set(['.wav', '.mp3', '.ogg', '.m4a', '.webm', '.aac', '.flac']);
+
 export default defineConfig(() => {
   return {
+    base: process.env.VITE_BASE_PATH || '/',
     plugins: [
       react(),
       tailwindcss(),
-      // Copies src/assets into dist/ so root-relative URLs like
-      // "/src/assets/images/..." (e.g. generate_image output) still resolve
-      // in production builds. Do not remove.
+      // Copies src/assets & Sounds into dist/ and generates static sounds-manifest.json + 404.html for GitHub Pages.
       {
         name: 'copy-unbundled-src-assets',
         apply: 'build',
@@ -29,6 +40,33 @@ export default defineConfig(() => {
           const distSounds = path.resolve(distDir, 'Sounds');
           if (fs.existsSync(distDir) && fs.existsSync(srcSounds)) {
             fs.cpSync(srcSounds, distSounds, {recursive: true, force: true});
+          }
+
+          if (fs.existsSync(distDir)) {
+            const manifest: Record<string, string> = {};
+            const publicSounds = path.resolve(__dirname, 'public/Sounds');
+            for (const dir of [srcSounds, publicSounds]) {
+              if (!fs.existsSync(dir)) continue;
+              for (const file of fs.readdirSync(dir)) {
+                const parsed = path.parse(file);
+                const base = parsed.name.toLowerCase();
+                const ext = parsed.ext.toLowerCase();
+                if (!SOUND_NAMES.has(base) || !SOUND_EXTS.has(ext) || manifest[base]) continue;
+                const stat = fs.statSync(path.join(dir, file));
+                manifest[base] = `Sounds/${encodeURIComponent(file)}?v=${Math.floor(stat.mtimeMs)}`;
+              }
+            }
+            fs.writeFileSync(
+              path.join(distDir, 'sounds-manifest.json'),
+              JSON.stringify({sounds: manifest}),
+              'utf8'
+            );
+
+            const idxPath = path.join(distDir, 'index.html');
+            const notFoundPath = path.join(distDir, '404.html');
+            if (fs.existsSync(idxPath)) {
+              fs.copyFileSync(idxPath, notFoundPath);
+            }
           }
         },
       },

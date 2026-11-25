@@ -25,9 +25,15 @@ export function SettingsView({
   const [cleaning, setCleaning] = useState(false);
 
   useEffect(() => {
-    fetch('/api/health')
-      .then((r) => r.json())
-      .then(setHealth)
+    fetch(`${import.meta.env.BASE_URL}api/health`)
+      .then((r) => {
+        const isJson = r.headers.get('content-type')?.includes('application/json');
+        if (!r.ok || !isJson) return null;
+        return r.json();
+      })
+      .then((data) => {
+        if (data) setHealth(data);
+      })
       .catch(() => {});
   }, []);
 

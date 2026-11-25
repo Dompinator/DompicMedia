@@ -83,10 +83,29 @@
 
 .vesper-startup-backdrop {
   animation: vesperBackdropFade 2.0s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-play-state: paused;
 }
 
 .vesper-startup-logo {
   animation: vesperLogoIntro 1.95s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation-play-state: paused;
+}
+
+/* Nothing in the startup sequence moves until the first user interaction. */
+.vesper-startup-running,
+.vesper-startup-running .vesper-startup-logo {
+  animation-play-state: running;
+}
+
+.vesper-startup-waiting {
+  opacity: 1;
+  visibility: visible;
+}
+
+.vesper-startup-waiting .vesper-startup-logo {
+  opacity: 1;
+  transform: scale(1);
+  filter: drop-shadow(0 0 22px rgba(91, 124, 250, 0.42));
 }
 
 @media (prefers-reduced-motion: reduce) {

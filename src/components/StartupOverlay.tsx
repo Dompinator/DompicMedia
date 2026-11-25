@@ -1,29 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import { VesperLogoMark } from './VesperLogo';
-import { getSoundPreference, playStartupSound } from '../lib/utils';
-import { loadSoundsManifest, playSound } from '../lib/sounds';
+import { getSoundPreference } from '../lib/utils';
+import { loadSoundsManifest, playSound, preloadSounds } from '../lib/sounds';
 
 export function StartupOverlay() {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const enabled = getSoundPreference();
+    let startupPlayed = false;
+    let active = true;
 
-    loadSoundsManifest().then(() => {
-      if (!playSound('startup', enabled)) {
-        playStartupSound(enabled);
-      }
+    // Load and preload files immediately, but wait for a real user gesture before
+    // playing startup.mp3. Browsers block audible autoplay on a fresh page load.
+    void loadSoundsManifest().then(() => {
+      if (active) preloadSounds();
     });
 
-    const timer = window.setTimeout(
-      () => {
-        setVisible(false);
-      },
-      reducedMotion ? 400 : 2050
-    );
+    const playStartupAfterGesture = () => {
+      if (startupPlayed) return;
+      startupPlayed = true;
+      window.removeEventListener('pointerdown', playStartupAfterGesture, true);
+      window.removeEventListener('keydown', playStartupAfterGesture, true);
+      if (getSoundPreference()) {
+        window.setTimeout(() => playSound('startup'), 80);
+      }
+    };
 
-    return () => window.clearTimeout(timer);
+    window.addEventListener('pointerdown', playStartupAfterGesture, true);
+    window.addEventListener('keydown', playStartupAfterGesture, true);
+
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(() => setVisible(false), reducedMotion ? 400 : 2050);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+      window.removeEventListener('pointerdown', playStartupAfterGesture, true);
+      window.removeEventListener('keydown', playStartupAfterGesture, true);
+    };
   }, []);
 
   if (!visible) return null;

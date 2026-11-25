@@ -55,15 +55,6 @@ export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScree
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Back to login"
-            title="Back to login"
-            className="shrink-0 flex h-10 w-10 items-center justify-center rounded-lg border border-white/15 bg-[#0B0D11] text-[#D1D5DB] hover:bg-white/10 hover:text-white transition-colors"
-          >
-            <X className="h-5 w-5" />
-          </button>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -72,9 +63,20 @@ export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScree
             onSubmit={handleConnect}
             className="lg:col-span-6 bg-[#12151C] border border-white/10 rounded-2xl p-6 space-y-5"
           >
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
-              <KeyRound className="w-4 h-4 text-[#5B7CFA]" />
-              <span>Public Client Credentials</span>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                <KeyRound className="w-4 h-4 text-[#5B7CFA]" />
+                <span>Public Client Credentials</span>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Back to login"
+                title="Back to login"
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/25 bg-[#202633] text-white hover:bg-[#34415B] transition-colors"
+              >
+                <span className="text-2xl font-semibold leading-none" aria-hidden="true">×</span>
+              </button>
             </div>
 
             <div>

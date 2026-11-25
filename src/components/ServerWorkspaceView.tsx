@@ -911,7 +911,6 @@ export function ServerWorkspaceView({
               <button
                 type="button"
                 onClick={() => {
-                  playSound('join_call');
                   setJoinedVoiceChannelId(activeChannel.id);
                 }}
                 className="px-5 py-2.5 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-xs font-semibold text-white"

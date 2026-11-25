@@ -18,11 +18,12 @@ import { VesperLogoMark } from './VesperLogo';
 
 interface AuthViewProps {
   onOpenSetup: () => void;
+  externalError?: string | null;
 }
 
 const EASE = [0.16, 1, 0.3, 1] as const;
 
-export function AuthView({ onOpenSetup }: AuthViewProps) {
+export function AuthView({ onOpenSetup, externalError }: AuthViewProps) {
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -400,6 +401,12 @@ export function AuthView({ onOpenSetup }: AuthViewProps) {
                   </button>
                 </div>
               </div>
+
+              {externalError && (
+                <div className="rounded-xl bg-[#EF4444]/10 border border-[#EF4444]/30 px-3.5 py-2.5 text-xs text-[#FCA5A5]">
+                  {externalError}
+                </div>
+              )}
 
               <AnimatePresence>
                 {error && (

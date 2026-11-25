@@ -4,8 +4,11 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "tsx scripts/generate-emoji-list.ts",
     "dev": "tsx server.ts",
+    "prebuild": "tsx scripts/generate-emoji-list.ts",
     "build": "vite build",
+    "prestart": "tsx scripts/generate-emoji-list.ts",
     "start": "tsx server.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",

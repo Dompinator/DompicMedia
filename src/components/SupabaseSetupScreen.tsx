@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
-import { Check, Copy, Database, KeyRound, Radio, ShieldCheck } from 'lucide-react';
+import { Check, Copy, Database, KeyRound, Radio, ShieldCheck, X } from 'lucide-react';
 import { VesperLogoMark } from './VesperLogo';
 import { saveBrowserSupabaseConfig } from '../lib/supabase';
 
 interface SupabaseSetupScreenProps {
   onConnected: () => void;
+  onClose: () => void;
 }
 
-export function SupabaseSetupScreen({ onConnected }: SupabaseSetupScreenProps) {
+export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScreenProps) {
   const [url, setUrl] = useState('');
   const [anonKey, setAnonKey] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +43,11 @@ export function SupabaseSetupScreen({ onConnected }: SupabaseSetupScreenProps) {
   return (
     <div className="min-h-screen bg-[#0B0D11] text-[#F3F4F6] flex flex-col items-center justify-center px-4 py-12">
       <div className="w-full max-w-4xl">
+        <div className="flex justify-end mb-3">
+          <button type="button" onClick={onClose} aria-label="Back to login" title="Back to login" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 bg-[#12151C] text-[#9CA3AF] hover:text-white hover:bg-white/10 transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
         <div className="flex items-center gap-3 mb-8">
           <VesperLogoMark className="w-10 h-10" />
           <div>

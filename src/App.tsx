@@ -47,18 +47,46 @@ export default function App() {
 
   const loadUserWorkspace = useCallback(async (uid: string) => {
     const supabase = getSupabase();
-    const [profRes, srvRes, emojiRes] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', uid).maybeSingle(),
-      supabase
-        .from('server_members')
-        .select('server:servers(*)')
-        .eq('user_id', uid),
+    let profRes = await supabase.from('profiles').select('*').eq('id', uid).maybeSingle();
+
+    // Repair older Auth accounts that do not yet have a matching profile row.
+    if (!profRes.error && !profRes.data) {
+      const { data: authUserResult } = await supabase.auth.getUser();
+      const authUser = authUserResult.user;
+      const metadata = authUser?.user_metadata || {};
+      const metadataUsername = String(metadata.username || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9_]/g, '')
+        .slice(0, 24);
+      const fallbackUsername = 'user_' + uid.replace(/-/g, '').slice(0, 10);
+      const username = metadataUsername.length >= 3 ? metadataUsername : fallbackUsername;
+      const displayName = String(metadata.display_name || authUser?.email?.split('@')[0] || username)
+        .trim().slice(0, 48) || username;
+
+      let insertResult = await supabase.from('profiles').insert({ id: uid, username, display_name: displayName });
+      if (insertResult.error && username !== fallbackUsername) {
+        insertResult = await supabase.from('profiles').insert({
+          id: uid, username: fallbackUsername, display_name: displayName,
+        });
+      }
+      if (insertResult.error) {
+        throw new Error('You are signed in, but your profile could not be created: ' + insertResult.error.message);
+      }
+      profRes = await supabase.from('profiles').select('*').eq('id', uid).single();
+    }
+
+    if (profRes.error) {
+      throw new Error('Signed in, but your profile could not be loaded: ' + profRes.error.message);
+    }
+    if (!profRes.data) {
+      throw new Error('Signed in, but your profile is missing. Please contact the site administrator.');
+    }
+
+    const [srvRes, emojiRes] = await Promise.all([
+      supabase.from('server_members').select('server:servers(*)').eq('user_id', uid),
       supabase.from('global_emojis').select('*').order('shortcode', { ascending: true }),
     ]);
-
-    if (profRes.data) {
-      setCurrentUser(profRes.data as Profile);
-    }
+    setCurrentUser(profRes.data as Profile);
     const srvList = (srvRes.data || [])
       .map((r) => r.server as unknown as Server)
       .filter(Boolean);
@@ -149,7 +177,12 @@ export default function App() {
       const uid = session?.user?.id || null;
       setSessionUserId(uid);
       if (uid) {
-        await loadUserWorkspace(uid);
+        try {
+          await loadUserWorkspace(uid);
+        } catch (err) {
+          console.error('DompicMEDIA account loading failed:', err);
+          setCurrentUser(null);
+        }
       } else {
         setCurrentUser(null);
         setServers([]);

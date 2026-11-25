@@ -142,7 +142,7 @@ async function runExpiredAttachmentCleanup(): Promise<{
     if (!objects || objects.length < pageSize) break;
   }
 
-  const ONE_GB = 1024 * 1024 * 1024;
+  const ONE_GB = 1_000_000_000;
   if (storageBytes <= ONE_GB) {
     return {
       checked: 0,
@@ -153,7 +153,9 @@ async function runExpiredAttachmentCleanup(): Promise<{
     };
   }
 
-  const cutoffIso = new Date(Date.now() - 2 * 30 * 24 * 60 * 60 * 1000).toISOString();
+  const cutoffDate = new Date();
+  cutoffDate.setMonth(cutoffDate.getMonth() - 2);
+  const cutoffIso = cutoffDate.toISOString();
   const nowIso = new Date().toISOString();
   const { data: oldRows, error: queryErr } = await admin
     .from('attachments')

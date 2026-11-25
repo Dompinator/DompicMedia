@@ -26,11 +26,29 @@ import { ServerWorkspaceView } from './components/ServerWorkspaceView';
 import { SettingsView } from './components/SettingsView';
 import { Avatar } from './components/Avatar';
 
+async function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 15000): Promise<T> {
+  let timeoutId: number | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = window.setTimeout(
+          () => reject(new Error(label + " timed out. Check your Supabase URL, public key, and project status, then try again.")),
+          timeoutMs
+        );
+      }),
+    ]);
+  } finally {
+    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+  }
+}
+
 export default function App() {
   const [booting, setBooting] = useState(true);
   const [supabaseReady, setSupabaseReady] = useState(false);
   const [forceSetup, setForceSetup] = useState(false);
   const [authLoadError, setAuthLoadError] = useState<string | null>(null);
+  const [bootError, setBootError] = useState<string | null>(null);
 
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
@@ -136,20 +154,31 @@ export default function App() {
 
   const bootstrap = useCallback(async () => {
     setBooting(true);
-    const { client } = await initSupabase();
-    if (!client) {
-      setSupabaseReady(false);
+    setBootError(null);
+    try {
+      const { client } = await withTimeout(initSupabase(), 'Supabase initialization');
+      if (!client) {
+        setSupabaseReady(false);
+        setSessionUserId(null);
+        setCurrentUser(null);
+        return;
+      }
+
+      setSupabaseReady(true);
+      const { data } = await withTimeout(client.auth.getSession(), 'Supabase session check');
+      const uid = data.session?.user?.id || null;
+      setSessionUserId(uid);
+      if (uid) {
+        await withTimeout(loadUserWorkspace(uid), 'Account data loading');
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not finish connecting to Supabase.';
+      console.error('DompicMEDIA startup failed:', err);
+      setBootError(message);
+      setAuthLoadError(message);
+    } finally {
       setBooting(false);
-      return;
     }
-    setSupabaseReady(true);
-    const { data } = await client.auth.getSession();
-    const uid = data.session?.user?.id || null;
-    setSessionUserId(uid);
-    if (uid) {
-      await loadUserWorkspace(uid);
-    }
-    setBooting(false);
   }, [loadUserWorkspace]);
 
   useEffect(() => {
@@ -243,6 +272,18 @@ export default function App() {
       {booting ? (
         <div className="min-h-screen bg-[#0B0D11] flex items-center justify-center">
           <Loader2 className="w-6 h-6 animate-spin text-[#5B7CFA]" />
+        </div>
+      ) : bootError ? (
+        <div className="min-h-screen bg-[#0B0D11] text-[#F3F4F6] flex items-center justify-center px-4">
+          <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#12151C] p-6 space-y-4">
+            <h1 className="text-lg font-semibold text-white">Could not finish Supabase setup</h1>
+            <p className="text-sm text-[#FCA5A5] break-words">{bootError}</p>
+            <p className="text-xs text-[#9CA3AF]">The page stopped waiting instead of staying on the loading spinner forever. Your saved public connection details have not been deleted.</p>
+            <div className="flex flex-wrap gap-3">
+              <button type="button" onClick={bootstrap} className="rounded-lg bg-[#5B7CFA] hover:bg-[#4B6CF0] px-4 py-2 text-sm font-semibold text-white">Try again</button>
+              <button type="button" onClick={() => { setBootError(null); setForceSetup(true); }} className="rounded-lg border border-white/15 px-4 py-2 text-sm font-semibold text-white hover:bg-white/5">Back to Supabase setup</button>
+            </div>
+          </div>
         </div>
       ) : forceSetup ? (
         <SupabaseSetupScreen

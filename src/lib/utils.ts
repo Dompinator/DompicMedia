@@ -64,6 +64,8 @@ export function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+import { resolveMimeType } from './audio';
+
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024; // 25 MB
 
 export const ALLOWED_CHAT_MIMES = new Set([
@@ -94,7 +96,8 @@ export function categorizeMime(mimeType: string): 'image' | 'video' | 'audio' | 
 export function validateAttachmentFile(file: File): string | null {
   if (file.size <= 0) return 'File is empty.';
   if (file.size > MAX_ATTACHMENT_BYTES) return 'File exceeds the 25 MB upload limit.';
-  if (!ALLOWED_CHAT_MIMES.has(file.type)) {
+  const type = resolveMimeType(file);
+  if (!type.startsWith('audio/') && !ALLOWED_CHAT_MIMES.has(type)) {
     return `File type "${file.type || 'unknown'}" is not permitted.`;
   }
   return null;

@@ -2,7 +2,9 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Camera,
   Check,
+  Ban,
   Edit3,
+  Flag,
   Loader2,
   Mail,
   UserCheck,
@@ -10,7 +12,10 @@ import {
   UserPlus,
   X,
 } from 'lucide-react';
-import { DmPrivacy, FriendRequest, FriendRequestPrivacy, GlobalEmoji, Post, PostMedia, Profile } from '../types';
+import { DmPrivacy, FriendRequest, FriendRequestPrivacy, GlobalEmoji, Post, Profile } from '../types';
+import { hydratePostRows, postActions } from '../lib/posts';
+import { sendNotification } from '../lib/notifications';
+import { useAppActions } from '../lib/appContext';
 import { getSupabase } from '../lib/supabase';
 import { Avatar } from './Avatar';
 import { CommentNode, fetchCommentsMapForPosts, PostCard } from './PostCard';
@@ -33,6 +38,8 @@ export function ProfileView({
   onOpenProfile,
 }: ProfileViewProps) {
   const isOwn = profileId === currentUser.id;
+  const { blockedIds, setBlocked, report } = useAppActions();
+  const iBlocked = blockedIds.has(profileId);
   const [profile, setProfile] = useState<Profile | null>(isOwn ? currentUser : null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [commentsByPost, setCommentsByPost] = useState<Record<string, CommentNode[]>>({});
@@ -80,29 +87,18 @@ export function ProfileView({
           .limit(20),
       ]);
 
-      const rawPosts = (postsRes.data || []) as Array<Record<string, unknown>>;
-      const postIds = rawPosts.map((p) => p.id as string);
-      let likedSet = new Set<string>();
-      if (postIds.length > 0) {
-        const { data: myLikes } = await supabase
-          .from('post_likes')
-          .select('post_id')
-          .eq('user_id', currentUser.id)
-          .in('post_id', postIds);
-        likedSet = new Set((myLikes || []).map((l) => l.post_id as string));
-      }
-
-      const hydratedPosts = rawPosts.map((r) => ({
-        ...(r as unknown as Post),
-        media_urls: Array.isArray(r.media_urls) ? (r.media_urls as PostMedia[]) : [],
-        liked_by_me: likedSet.has(r.id as string),
-      }));
+      const hydratedPosts = await hydratePostRows(postsRes.data || [], currentUser.id);
 
       setFollowersCount(followersRes.count || 0);
       setFollowingCount(followingRes.count || 0);
       setFriendsCount((friendsARes.count || 0) + (friendsBRes.count || 0));
       setPosts(hydratedPosts);
-      setCommentsByPost(await fetchCommentsMapForPosts(postIds, currentUser.id));
+      setCommentsByPost(
+        await fetchCommentsMapForPosts(
+          hydratedPosts.map((p) => p.repost_of?.id || p.id),
+          currentUser.id
+        )
+      );
 
       if (!isOwn) {
         const uA = currentUser.id < profileId ? currentUser.id : profileId;
@@ -142,7 +138,8 @@ export function ProfileView({
 
   useEffect(() => {
     loadProfileData();
-  }, [loadProfileData]);
+    // Reload after blocking or unblocking: follows, friendship and posts change.
+  }, [loadProfileData, iBlocked]);
 
   const toggleFollow = async () => {
     if (isOwn) return;
@@ -179,16 +176,13 @@ export function ProfileView({
       return;
     }
     setPendingRequest(data as FriendRequest);
-    await supabase.from('notifications').upsert(
-      {
-        recipient_id: profileId,
-        actor_id: currentUser.id,
-        type: 'friend_request',
-        entity_id: data.id,
-        dedupe_key: `friend_req_${data.id}`,
-      },
-      { onConflict: 'recipient_id,dedupe_key', ignoreDuplicates: true }
-    );
+    await sendNotification({
+      recipient_id: profileId,
+      actor_id: currentUser.id,
+      type: 'friend_request',
+      entity_id: data.id,
+      dedupe_key: `friend_req_${data.id}`,
+    });
   };
 
   const acceptIncomingRequest = async () => {
@@ -327,36 +321,19 @@ export function ProfileView({
     }
   };
 
-  const toggleLikePost = async (target: Post) => {
-    const supabase = getSupabase();
-    const currentlyLiked = Boolean(target.liked_by_me);
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id === target.id
-          ? {
-              ...p,
-              liked_by_me: !currentlyLiked,
-              likes_count: Math.max(0, p.likes_count + (currentlyLiked ? -1 : 1)),
-            }
-          : p
-      )
-    );
-    if (currentlyLiked) {
-      await supabase
-        .from('post_likes')
-        .delete()
-        .eq('post_id', target.id)
-        .eq('user_id', currentUser.id);
-    } else {
-      await supabase.from('post_likes').insert({ post_id: target.id, user_id: currentUser.id });
-    }
-  };
+  const actions = postActions(currentUser, setPosts, setError);
 
-  const handleDeletePost = async (postId: string) => {
-    const { error: delErr } = await getSupabase().from('posts').delete().eq('id', postId);
-    if (!delErr) {
-      setPosts((prev) => prev.filter((p) => p.id !== postId));
+  const toggleBlock = async () => {
+    if (
+      !iBlocked &&
+      !window.confirm(
+        `Block @${profile.username}? You will not see each other's posts or be able to message each other, and you will stop following each other.`
+      )
+    ) {
+      return;
     }
+    const message = await setBlocked(profileId, !iBlocked);
+    if (message) setError(message);
   };
 
   return (
@@ -433,6 +410,14 @@ export function ProfileView({
                   <Edit3 className="w-3.5 h-3.5" />
                   <span>Edit Profile</span>
                 </button>
+              ) : iBlocked ? (
+                <button
+                  type="button"
+                  onClick={toggleBlock}
+                  className="px-4 py-2 rounded-lg bg-[#EF4444]/15 border border-[#EF4444]/30 text-xs font-semibold text-[#FCA5A5]"
+                >
+                  Unblock
+                </button>
               ) : (
                 <>
                   <button
@@ -497,6 +482,28 @@ export function ProfileView({
                   )}
                 </>
               )}
+              {!isOwn && (
+                <>
+                  {!iBlocked && (
+                    <button
+                      type="button"
+                      onClick={toggleBlock}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-[#9CA3AF] hover:text-[#FCA5A5]"
+                    >
+                      <Ban className="w-3.5 h-3.5" />
+                      <span>Block</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => report('profile', profileId)}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-[#9CA3AF] hover:text-[#FCA5A5]"
+                  >
+                    <Flag className="w-3.5 h-3.5" />
+                    <span>Report</span>
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
@@ -543,18 +550,16 @@ export function ProfileView({
               post={post}
               currentUser={currentUser}
               globalEmojis={globalEmojis}
-              initialComments={commentsByPost[post.id]}
+              initialComments={commentsByPost[post.repost_of?.id || post.id]}
               onOpenProfile={onOpenProfile}
               onOpenProfileByUsername={openProfileByUsername}
-              onToggleLikePost={toggleLikePost}
-              onDeletePost={isOwn ? handleDeletePost : undefined}
-              onReplyCountDelta={(pid, delta) =>
-                setPosts((prev) =>
-                  prev.map((p) =>
-                    p.id === pid ? { ...p, replies_count: Math.max(0, p.replies_count + delta) } : p
-                  )
-                )
-              }
+              onToggleLikePost={actions.toggleLike}
+              onRepostPost={async (target) => {
+                const created = await actions.repost(target);
+                if (created && isOwn) setPosts((prev) => [created, ...prev]);
+              }}
+              onDeletePost={isOwn ? actions.remove : undefined}
+              onReplyCountDelta={actions.replyCountDelta}
             />
           ))}
         </div>

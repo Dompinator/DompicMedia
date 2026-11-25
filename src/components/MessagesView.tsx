@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Flag,
   Loader2,
   Mail,
+  Pencil,
   Paperclip,
   Search,
   Send,
@@ -23,6 +25,9 @@ import {
   formatTimeClock,
   validateAttachmentFile,
 } from '../lib/utils';
+import { withResolvedType } from '../lib/audio';
+import { useAppActions } from '../lib/appContext';
+import { MessageEditor } from './MessageEditor';
 import { Avatar } from './Avatar';
 import { CustomEmojiImg, EmojiPicker, RichTextWithEmojis } from './CustomEmoji';
 import { AttachmentItem } from './AttachmentViewer';
@@ -32,7 +37,10 @@ interface MessagesViewProps {
   globalEmojis: GlobalEmoji[];
   initialConversationId?: string;
   onOpenProfile: (userId: string) => void;
-  onUnreadCountChange: (count: number) => void;
+  /** Conversations with unread messages, tracked app-wide. */
+  unreadIds: string[];
+  onActiveConversationChange: (conversationId: string | null) => void;
+  onRead: () => void;
 }
 
 const DM_PAGE_SIZE = 30;
@@ -42,8 +50,12 @@ export function MessagesView({
   globalEmojis,
   initialConversationId,
   onOpenProfile,
-  onUnreadCountChange,
+  unreadIds,
+  onActiveConversationChange,
+  onRead,
 }: MessagesViewProps) {
+  const { report, blockedIds } = useAppActions();
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConvoId, setActiveConvoId] = useState<string | null>(initialConversationId || null);
   const [messages, setMessages] = useState<DirectMessage[]>([]);
@@ -74,7 +86,6 @@ export function MessagesView({
   }, [initialConversationId]);
 
   const loadConversations = useCallback(async () => {
-    setLoadingConvos(true);
     try {
       const supabase = getSupabase();
       const { data: convos } = await supabase
@@ -86,77 +97,57 @@ export function MessagesView({
       const rows = (convos || []) as Conversation[];
       if (rows.length === 0) {
         setConversations([]);
-        onUnreadCountChange(0);
         return;
       }
 
       const otherIds = rows.map((c) => (c.user_a === currentUser.id ? c.user_b : c.user_a));
-      const convoIds = rows.map((c) => c.id);
-
-      const [profilesRes, readsRes] = await Promise.all([
-        supabase.from('profiles').select('*').in('id', otherIds),
-        supabase
-          .from('conversation_reads')
-          .select('*')
-          .eq('user_id', currentUser.id)
-          .in('conversation_id', convoIds),
-      ]);
-
+      const { data: profiles } = await supabase.from('profiles').select('*').in('id', otherIds);
       const profMap = new Map<string, Profile>();
-      for (const p of (profilesRes.data || []) as Profile[]) {
+      for (const p of (profiles || []) as Profile[]) {
         profMap.set(p.id, p);
       }
-      const readMap = new Map<string, string>();
-      for (const r of readsRes.data || []) {
-        readMap.set(r.conversation_id as string, r.last_read_at as string);
-      }
 
-      let unreadTotal = 0;
-      const hydrated = rows.map((c) => {
-        const otherId = c.user_a === currentUser.id ? c.user_b : c.user_a;
-        const lastRead = readMap.get(c.id);
-        const unread =
-          c.id !== activeConvoId &&
-          (!lastRead || new Date(c.last_message_at).getTime() > new Date(lastRead).getTime());
-        if (unread) unreadTotal += 1;
-        return {
-          ...c,
-          other_user: profMap.get(otherId),
-          unread,
-        };
-      });
+      const hydrated = rows.map((c) => ({
+        ...c,
+        other_user: profMap.get(c.user_a === currentUser.id ? c.user_b : c.user_a),
+      }));
 
       setConversations(hydrated);
-      onUnreadCountChange(unreadTotal);
-      if (!activeConvoId && hydrated.length > 0 && !initialConversationId) {
-        setActiveConvoId(hydrated[0].id);
-      }
+      setActiveConvoId((cur) => cur || hydrated[0]?.id || null);
     } finally {
       setLoadingConvos(false);
     }
-  }, [activeConvoId, currentUser.id, initialConversationId, onUnreadCountChange]);
+  }, [currentUser.id]);
 
+  // Reload when a new unread message arrives, so the list order stays current.
+  const unreadKey = [...unreadIds].sort().join(',');
   useEffect(() => {
     loadConversations();
-  }, [loadConversations]);
+  }, [loadConversations, unreadKey]);
+
+  useEffect(() => {
+    onActiveConversationChange(activeConvoId);
+    setEditingId(null);
+  }, [activeConvoId, onActiveConversationChange]);
+
+  useEffect(() => () => onActiveConversationChange(null), [onActiveConversationChange]);
 
   const markConversationRead = useCallback(
     async (convoId: string) => {
-      const supabase = getSupabase();
-      await supabase.from('conversation_reads').upsert(
-        {
-          conversation_id: convoId,
-          user_id: currentUser.id,
-          last_read_at: new Date().toISOString(),
-        },
-        { onConflict: 'conversation_id,user_id' }
-      );
-      setConversations((prev) =>
-        prev.map((c) => (c.id === convoId ? { ...c, unread: false } : c))
-      );
+      // A message arriving in a background tab has not been read yet.
+      if (document.visibilityState !== 'visible') return;
+      await getSupabase().rpc('mark_conversation_read', { p_conversation_id: convoId });
+      onRead();
     },
-    [currentUser.id]
+    [onRead]
   );
+
+  useEffect(() => {
+    if (!activeConvoId) return;
+    const onVisible = () => markConversationRead(activeConvoId);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, [activeConvoId, markConversationRead]);
 
   const hydrateMessages = useCallback(async (rawMsgs: DirectMessage[]): Promise<DirectMessage[]> => {
     if (rawMsgs.length === 0) return [];
@@ -263,6 +254,31 @@ export function MessagesView({
       )
       .on(
         'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'direct_messages',
+          filter: `conversation_id=eq.${activeConvoId}`,
+        },
+        (payload) => {
+          const updated = payload.new as DirectMessage;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === updated.id ? { ...m, content: updated.content, edited_at: updated.edited_at } : m
+            )
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'direct_messages' },
+        (payload) => {
+          const oldId = (payload.old as { id?: string })?.id;
+          if (oldId) setMessages((prev) => prev.filter((m) => m.id !== oldId));
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: '*', schema: 'public', table: 'message_reactions', filter: 'message_type=eq.dm' },
         () => {
           loadMessages(activeConvoId, 0, false);
@@ -346,15 +362,19 @@ export function MessagesView({
         })
         .select('*, sender:profiles!direct_messages_sender_id_fkey(*)')
         .single();
-      if (msgErr) throw msgErr;
+      if (msgErr) {
+        // Row-level security rejects messages between blocked accounts.
+        throw new Error(msgErr.code === '42501' ? 'You cannot message this account.' : msgErr.message);
+      }
 
       let uploadedAttachments: AttachmentRecord[] = [];
       if (pendingFile) {
+        const file = withResolvedType(pendingFile);
         const ext = pendingFile.name.split('.').pop() || 'bin';
         const storagePath = `${currentUser.id}/dm/${activeConvoId}/${crypto.randomUUID()}.${ext}`;
         const { error: upErr } = await supabase.storage
           .from('chat-attachments')
-          .upload(storagePath, pendingFile, { contentType: pendingFile.type });
+          .upload(storagePath, file, { contentType: file.type });
         if (upErr) throw upErr;
 
         const { data: attRow, error: attErr } = await supabase
@@ -365,9 +385,9 @@ export function MessagesView({
             context_id: activeConvoId,
             message_id: msg.id,
             file_name: pendingFile.name,
-            mime_type: pendingFile.type,
-            file_size: pendingFile.size,
-            category: categorizeMime(pendingFile.type),
+            mime_type: file.type,
+            file_size: file.size,
+            category: categorizeMime(file.type),
             storage_bucket: 'chat-attachments',
             storage_path: storagePath,
           })
@@ -388,7 +408,7 @@ export function MessagesView({
       setShowEmojiPicker(false);
       setTimeout(() => bottomRef.current?.scrollIntoView({ behavior: 'smooth' }), 50);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to send message.');
+      setError((err as { message?: string })?.message || 'Failed to send message.');
     } finally {
       setSending(false);
     }
@@ -489,7 +509,7 @@ export function MessagesView({
                   </div>
                 </div>
 
-                {c.unread && (
+                {unreadIds.includes(c.id) && c.id !== activeConvoId && (
                   <span className="text-[10px] font-semibold text-[#7C96FF] shrink-0">New</span>
                 )}
               </button>
@@ -581,12 +601,28 @@ export function MessagesView({
                           <time className="font-mono text-[11px] text-[#6B7280]">
                             {formatTimeClock(msg.created_at)} · {formatRelativeTime(msg.created_at)}
                           </time>
+                          {msg.edited_at && <span className="text-[11px] text-[#6B7280]">(edited)</span>}
                         </div>
 
-                        {msg.content && (
-                          <div className="text-sm text-[#E5E7EB]">
-                            <RichTextWithEmojis text={msg.content} globalEmojis={globalEmojis} />
-                          </div>
+                        {editingId === msg.id ? (
+                          <MessageEditor
+                            table="direct_messages"
+                            messageId={msg.id}
+                            initial={msg.content}
+                            onCancel={() => setEditingId(null)}
+                            onSaved={(content, editedAt) => {
+                              setMessages((prev) =>
+                                prev.map((m) => (m.id === msg.id ? { ...m, content, edited_at: editedAt } : m))
+                              );
+                              setEditingId(null);
+                            }}
+                          />
+                        ) : (
+                          msg.content && (
+                            <div className="text-sm text-[#E5E7EB]">
+                              <RichTextWithEmojis text={msg.content} globalEmojis={globalEmojis} />
+                            </div>
+                          )
                         )}
 
                         {msg.attachments && msg.attachments.length > 0 && (
@@ -618,6 +654,26 @@ export function MessagesView({
                         )}
                       </div>
 
+                      {msg.sender_id === currentUser.id ? (
+                        <button
+                          type="button"
+                          onClick={() => setEditingId(msg.id)}
+                          className="sm:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/5"
+                          title="Edit message"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => report('dm', msg.id)}
+                          className="sm:opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 rounded-lg text-[#9CA3AF] hover:text-[#EF4444] hover:bg-white/5"
+                          title="Report message"
+                        >
+                          <Flag className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+
                       <button
                         type="button"
                         onClick={() =>
@@ -646,6 +702,11 @@ export function MessagesView({
             </div>
 
             {/* Typing & Composer */}
+            {activeConvo.other_user && blockedIds.has(activeConvo.other_user.id) && (
+              <p className="px-5 py-2 text-xs text-[#FCA5A5] border-t border-white/8">
+                You blocked this account. Unblock it from their profile or Settings to send messages.
+              </p>
+            )}
             <div className="px-5 pb-4 pt-2 border-t border-white/8 relative">
               {typingPeer && (
                 <div className="text-[11px] text-[#9CA3AF] mb-1.5">{typingPeer} is typing...</div>

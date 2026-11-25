@@ -46,6 +46,10 @@ export interface Post {
   likes_count: number;
   replies_count: number;
   reposts_count: number;
+  /** Set only on Song Posts. */
+  song_title?: string | null;
+  song_duration?: number | null;
+  streams_count?: number;
   created_at: string;
   author?: Profile;
   repost_of?: Post | null;
@@ -104,6 +108,7 @@ export interface DirectMessage {
   sender_id: string;
   content: string;
   created_at: string;
+  edited_at?: string | null;
   sender?: Profile;
   attachments?: AttachmentRecord[];
   reactions?: MessageReaction[];
@@ -194,9 +199,28 @@ export interface VoiceParticipant {
 
 export type AppView =
   | { kind: 'feed' }
-  | { kind: 'explore' }
+  | { kind: 'explore'; query?: string }
   | { kind: 'messages'; conversationId?: string }
   | { kind: 'inbox' }
   | { kind: 'profile'; userId: string }
+  | { kind: 'post'; postId: string }
   | { kind: 'server'; serverId: string; channelId?: string }
+  | { kind: 'reports' }
   | { kind: 'settings' };
+
+export type ReportTargetType = 'post' | 'profile' | 'channel_message' | 'dm';
+
+export interface Report {
+  id: string;
+  reporter_id: string;
+  reported_user_id: string;
+  target_type: ReportTargetType;
+  target_id: string;
+  reason: string;
+  details: string;
+  snapshot: string;
+  status: 'open' | 'resolved' | 'dismissed';
+  created_at: string;
+  reporter?: Profile;
+  reported_user?: Profile;
+}

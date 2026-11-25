@@ -137,6 +137,15 @@ export function AttachmentItem({ attachment }: { attachment: AttachmentRecord })
           </span>
         </div>
         <audio src={signedUrl} controls preload="metadata" className="w-full h-9" />
+        <a
+          href={signedUrl}
+          target="_blank"
+          rel="noreferrer"
+          download={attachment.file_name}
+          className="inline-flex items-center gap-1 mt-2 text-[11px] text-[#7C96FF] hover:underline"
+        >
+          <Download className="w-3 h-3" /> Download
+        </a>
       </div>
     );
   }

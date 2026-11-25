@@ -4,12 +4,16 @@ import { GlobalEmoji, Profile } from '../types';
 import { getSupabase } from '../lib/supabase';
 import { BUILTIN_EMOJIS, validatePng128x128 } from '../lib/utils';
 import { Avatar } from './Avatar';
+import { SearchPostsPanel } from './SearchPostsPanel';
 
 interface ExplorePeopleViewProps {
   currentUser: Profile;
   globalEmojis: GlobalEmoji[];
   onOpenProfile: (userId: string) => void;
   onRefreshEmojis: () => Promise<void>;
+  /** Opens the post search with this text, e.g. a clicked #hashtag. */
+  initialQuery?: string;
+  onOpenProfileByUsername: (username: string) => void;
 }
 
 export function ExplorePeopleView({
@@ -17,8 +21,15 @@ export function ExplorePeopleView({
   globalEmojis,
   onOpenProfile,
   onRefreshEmojis,
+  initialQuery,
+  onOpenProfileByUsername,
 }: ExplorePeopleViewProps) {
-  const [tab, setTab] = useState<'search' | 'friends' | 'following' | 'followers' | 'emojis'>('search');
+  const [tab, setTab] = useState<'search' | 'posts' | 'friends' | 'following' | 'followers' | 'emojis'>(
+    initialQuery ? 'posts' : 'search'
+  );
+  useEffect(() => {
+    if (initialQuery) setTab('posts');
+  }, [initialQuery]);
   const [query, setQuery] = useState('');
   const [people, setPeople] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(false);
@@ -78,7 +89,7 @@ export function ExplorePeopleView({
   }, [currentUser.id, query, tab]);
 
   useEffect(() => {
-    if (tab !== 'emojis') {
+    if (tab !== 'emojis' && tab !== 'posts') {
       const t = setTimeout(loadPeople, tab === 'search' ? 200 : 0);
       return () => clearTimeout(t);
     }
@@ -182,11 +193,11 @@ export function ExplorePeopleView({
   };
 
   return (
-    <div className="max-w-3xl mx-auto w-full px-4 py-6">
+    <div className={`${tab === 'posts' ? 'max-w-5xl' : 'max-w-3xl'} mx-auto w-full px-4 py-6`}>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/8 pb-4 mb-5">
-        <h2 className="font-display text-lg font-bold text-white">People &amp; Platform Emojis</h2>
+        <h2 className="font-display text-lg font-bold text-white">Explore</h2>
         <div className="flex flex-wrap items-center gap-1 p-1 bg-[#12151C] border border-white/8 rounded-lg">
-          {(['search', 'friends', 'following', 'followers', 'emojis'] as const).map((t) => (
+          {(['search', 'posts', 'friends', 'following', 'followers', 'emojis'] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -195,7 +206,7 @@ export function ExplorePeopleView({
                 tab === t ? 'bg-[#5B7CFA] text-white' : 'text-[#9CA3AF] hover:text-white'
               }`}
             >
-              {t === 'emojis' ? 'Emoji Library' : t}
+              {t === 'emojis' ? 'Emoji Library' : t === 'search' ? 'People' : t}
             </button>
           ))}
         </div>
@@ -214,7 +225,15 @@ export function ExplorePeopleView({
         </div>
       )}
 
-      {tab === 'emojis' ? (
+      {tab === 'posts' ? (
+        <SearchPostsPanel
+          initialQuery={initialQuery || ''}
+          currentUser={currentUser}
+          globalEmojis={globalEmojis}
+          onOpenProfile={onOpenProfile}
+          onOpenProfileByUsername={onOpenProfileByUsername}
+        />
+      ) : tab === 'emojis' ? (
         <div className="space-y-6">
           <div className="bg-[#12151C] border border-white/8 rounded-2xl p-5">
             <div className="flex items-center justify-between gap-3 mb-4">

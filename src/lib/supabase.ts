@@ -8,6 +8,35 @@ interface PublicSupabaseConfig {
   supabaseAnonKey: string;
 }
 
+// Read before the Supabase client consumes the URL fragment of a password reset link.
+const initialHash = typeof window === 'undefined' ? '' : window.location.hash;
+const RECOVERY_KEY = 'dompic_password_recovery';
+
+export function passwordRecoveryPending(): boolean {
+  try {
+    if (/(^#|&)type=recovery(&|$)/.test(initialHash) && !sessionStorage.getItem(RECOVERY_KEY)) {
+      sessionStorage.setItem(RECOVERY_KEY, 'pending');
+    }
+    return sessionStorage.getItem(RECOVERY_KEY) === 'pending';
+  } catch {
+    return /(^#|&)type=recovery(&|$)/.test(initialHash);
+  }
+}
+
+export function finishPasswordRecovery(): void {
+  try {
+    sessionStorage.setItem(RECOVERY_KEY, 'done');
+  } catch {
+    // ignore storage restriction
+  }
+}
+
+/** Message from a failed email link (for example an expired reset link). */
+export function authLinkError(): string | null {
+  const params = new URLSearchParams(initialHash.replace(/^#/, ''));
+  return params.has('error') ? params.get('error_description') || 'That email link is no longer valid.' : null;
+}
+
 let clientInstance: SupabaseClient | null = null;
 let activeConfig: PublicSupabaseConfig | null = null;
 

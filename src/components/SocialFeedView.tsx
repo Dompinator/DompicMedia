@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Image as ImageIcon,
+  Music,
   Smile,
   X,
 } from 'lucide-react';
 import { GlobalEmoji, Post, PostMedia, Profile } from '../types';
 import { getSupabase } from '../lib/supabase';
 import { categorizeMime, formatFileSize, validateAttachmentFile } from '../lib/utils';
+import { AUDIO_ACCEPT, formatDuration, MAX_SONG_BYTES, probeAudio, withResolvedType } from '../lib/audio';
+import { hydratePostRows, POST_SELECT, postActions } from '../lib/posts';
+import { MentionInput } from './MentionInput';
 import { playSound } from '../lib/sounds';
 import { Avatar } from './Avatar';
 import { EmojiPicker } from './CustomEmoji';
@@ -41,25 +45,14 @@ export function SocialFeedView({
   const [posting, setPosting] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
 
+  // Song Post state
+  const [songMode, setSongMode] = useState(false);
+  const [songTitle, setSongTitle] = useState('');
+  const [song, setSong] = useState<{ file: File; duration: number } | null>(null);
+  const [songCover, setSongCover] = useState<File | null>(null);
+
   const hydratePosts = useCallback(
-    async (rawPosts: Array<Record<string, unknown>>): Promise<Post[]> => {
-      if (rawPosts.length === 0) return [];
-      const supabase = getSupabase();
-      const postIds = rawPosts.map((p) => p.id as string);
-      const { data: myLikes } = await supabase
-        .from('post_likes')
-        .select('post_id')
-        .eq('user_id', currentUser.id)
-        .in('post_id', postIds);
-
-      const likedSet = new Set((myLikes || []).map((l) => l.post_id as string));
-
-      return rawPosts.map((row) => ({
-        ...(row as unknown as Post),
-        media_urls: Array.isArray(row.media_urls) ? (row.media_urls as PostMedia[]) : [],
-        liked_by_me: likedSet.has(row.id as string),
-      }));
-    },
+    (rawPosts: unknown[]) => hydratePostRows(rawPosts, currentUser.id),
     [currentUser.id]
   );
 
@@ -98,26 +91,6 @@ export function SocialFeedView({
         if (fetchErr) throw fetchErr;
 
         const hydrated = await hydratePosts(data || []);
-
-        const repostIds = hydrated
-          .map((p) => p.repost_of_id)
-          .filter((id): id is string => Boolean(id));
-        if (repostIds.length > 0) {
-          const { data: origPosts } = await supabase
-            .from('posts')
-            .select('*, author:profiles!posts_author_id_fkey(*)')
-            .in('id', repostIds);
-          const origHydrated = await hydratePosts(origPosts || []);
-          const origMap = new Map<string, Post>();
-          for (const op of origHydrated) {
-            origMap.set(op.id, op);
-          }
-          for (const p of hydrated) {
-            if (p.repost_of_id) {
-              p.repost_of = origMap.get(p.repost_of_id) || null;
-            }
-          }
-        }
 
         const displayIds = Array.from(
           new Set(hydrated.map((p) => (p.repost_of ? p.repost_of.id : p.id)))
@@ -184,6 +157,7 @@ export function SocialFeedView({
 
   const handleFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
+    e.target.value = '';
     for (const f of files) {
       const err = validateAttachmentFile(f);
       if (err) {
@@ -192,26 +166,63 @@ export function SocialFeedView({
       }
     }
     setPendingFiles((prev) => [...prev, ...files].slice(0, 4));
-    e.target.value = '';
   };
+
+  const handleSongPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files?.[0];
+    e.target.value = '';
+    if (!picked) return;
+    setError(null);
+    const file = withResolvedType(picked);
+    if (!file.type.startsWith('audio/')) {
+      setError('Choose a sound file for a Song Post.');
+      return;
+    }
+    if (file.size <= 0 || file.size > MAX_SONG_BYTES) {
+      setError('Songs must be 50 MB or smaller.');
+      return;
+    }
+    const duration = await probeAudio(file);
+    if (duration === null) {
+      setError('This browser cannot play that format. Try MP3, WAV, OGG, M4A or FLAC.');
+      return;
+    }
+    setSong({ file, duration });
+    setSongTitle((prev) => prev || file.name.replace(/\.[^.]+$/, '').slice(0, 100));
+  };
+
+  const clearSong = () => {
+    setSongMode(false);
+    setSong(null);
+    setSongCover(null);
+    setSongTitle('');
+  };
+
+  const canPost = songMode
+    ? Boolean(song && songTitle.trim())
+    : Boolean(content.trim() || pendingFiles.length > 0);
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!content.trim() && pendingFiles.length === 0) return;
+    if (!canPost) return;
     setPosting(true);
     setError(null);
+    const uploadedPaths: string[] = [];
 
     try {
       const supabase = getSupabase();
       const uploadedMedia: PostMedia[] = [];
+      const files = songMode ? [song!.file, ...(songCover ? [songCover] : [])] : pendingFiles;
 
-      for (const file of pendingFiles) {
+      for (const original of files) {
+        const file = withResolvedType(original);
         const ext = file.name.split('.').pop() || 'bin';
         const storagePath = `${currentUser.id}/${crypto.randomUUID()}.${ext}`;
         const { error: upErr } = await supabase.storage
           .from('post-media')
           .upload(storagePath, file, { contentType: file.type });
         if (upErr) throw upErr;
+        uploadedPaths.push(storagePath);
 
         const { data: pub } = supabase.storage.from('post-media').getPublicUrl(storagePath);
         uploadedMedia.push({
@@ -229,8 +240,11 @@ export function SocialFeedView({
           author_id: currentUser.id,
           content: content.trim(),
           media_urls: uploadedMedia,
+          ...(songMode
+            ? { song_title: songTitle.trim(), song_duration: Math.round(song!.duration) }
+            : {}),
         })
-        .select('*, author:profiles!posts_author_id_fkey(*)')
+        .select(POST_SELECT)
         .single();
 
       if (insErr) throw insErr;
@@ -241,130 +255,25 @@ export function SocialFeedView({
       setPosts((prev) => (prev.some((p) => p.id === hydrated.id) ? prev : [hydrated, ...prev]));
       setContent('');
       setPendingFiles([]);
+      clearSong();
       setShowEmojiPicker(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to publish post.');
+      // Don't leave files behind for a post that was never created.
+      if (uploadedPaths.length > 0) {
+        await getSupabase().storage.from('post-media').remove(uploadedPaths);
+      }
+      const message = (err as { message?: string })?.message;
+      setError(message || 'Failed to publish post.');
     } finally {
       setPosting(false);
     }
   };
 
-  const toggleLike = async (post: Post) => {
-    const supabase = getSupabase();
-    const targetId = post.id;
-    const currentlyLiked = Boolean(post.liked_by_me);
-
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === targetId) {
-          return {
-            ...p,
-            liked_by_me: !currentlyLiked,
-            likes_count: Math.max(0, p.likes_count + (currentlyLiked ? -1 : 1)),
-          };
-        }
-        if (p.repost_of && p.repost_of.id === targetId) {
-          return {
-            ...p,
-            repost_of: {
-              ...p.repost_of,
-              liked_by_me: !currentlyLiked,
-              likes_count: Math.max(0, p.repost_of.likes_count + (currentlyLiked ? -1 : 1)),
-            },
-          };
-        }
-        return p;
-      })
-    );
-
-    if (currentlyLiked) {
-      await supabase
-        .from('post_likes')
-        .delete()
-        .eq('post_id', targetId)
-        .eq('user_id', currentUser.id);
-    } else {
-      const { error: likeErr } = await supabase
-        .from('post_likes')
-        .insert({ post_id: targetId, user_id: currentUser.id });
-      if (!likeErr && post.author_id !== currentUser.id) {
-        await supabase.from('notifications').upsert(
-          {
-            recipient_id: post.author_id,
-            actor_id: currentUser.id,
-            type: 'post_like',
-            entity_id: post.id,
-            dedupe_key: `like_${post.id}_${currentUser.id}`,
-          },
-          { onConflict: 'recipient_id,dedupe_key', ignoreDuplicates: true }
-        );
-      }
-    }
-  };
+  const actions = postActions(currentUser, setPosts, setError);
 
   const handleRepost = async (post: Post) => {
-    const supabase = getSupabase();
-    const originalId = post.repost_of_id || post.id;
-    const originalAuthorId = post.repost_of?.author_id || post.author_id;
-    const { data, error: repErr } = await supabase
-      .from('posts')
-      .insert({
-        author_id: currentUser.id,
-        content: '',
-        repost_of_id: originalId,
-      })
-      .select('*, author:profiles!posts_author_id_fkey(*)')
-      .single();
-
-    if (repErr) {
-      setError('You have already reposted this post.');
-      return;
-    }
-
-    if (originalAuthorId !== currentUser.id) {
-      await supabase.from('notifications').upsert(
-        {
-          recipient_id: originalAuthorId,
-          actor_id: currentUser.id,
-          type: 'post_repost',
-          entity_id: originalId,
-          dedupe_key: `repost_${originalId}_${currentUser.id}`,
-        },
-        { onConflict: 'recipient_id,dedupe_key', ignoreDuplicates: true }
-      );
-    }
-
-    if (data) {
-      const target = post.repost_of || post;
-      const hydrated: Post = {
-        ...(data as unknown as Post),
-        media_urls: [],
-        repost_of: target,
-        liked_by_me: false,
-      };
-      setPosts((prev) => [
-        hydrated,
-        ...prev.map((p) => (p.id === originalId ? { ...p, reposts_count: p.reposts_count + 1 } : p)),
-      ]);
-    }
-  };
-
-  const handleDeletePost = async (postId: string) => {
-    const supabase = getSupabase();
-    const { error: delErr } = await supabase.from('posts').delete().eq('id', postId);
-    if (!delErr) {
-      setPosts((prev) => prev.filter((p) => p.id !== postId));
-    }
-  };
-
-  const handleReplyCountDelta = (postId: string, delta: number) => {
-    setPosts((prev) =>
-      prev.map((p) =>
-        p.id === postId
-          ? { ...p, replies_count: Math.max(0, p.replies_count + delta) }
-          : p
-      )
-    );
+    const created = await actions.repost(post);
+    if (created) setPosts((prev) => [created, ...prev]);
   };
 
   return (
@@ -402,16 +311,67 @@ export function SocialFeedView({
         <div className="flex gap-3">
           <Avatar src={currentUser.avatar_url} name={currentUser.display_name} size="md" />
           <div className="flex-1 min-w-0">
-            <textarea
-              rows={3}
+            {songMode && (
+              <div className="mb-3 rounded-xl border border-[#5B7CFA]/40 bg-[#0B0D11] p-3 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-semibold text-[#7C96FF]">
+                    <Music className="w-4 h-4" /> Song Post
+                  </span>
+                  <button type="button" onClick={clearSong} aria-label="Cancel Song Post" className="text-[#9CA3AF] hover:text-white">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <input
+                  type="text"
+                  value={songTitle}
+                  maxLength={100}
+                  onChange={(e) => setSongTitle(e.target.value)}
+                  placeholder="Song title"
+                  aria-label="Song title"
+                  className="w-full rounded-lg bg-[#12151C] border border-white/10 px-3 py-2 text-sm text-white focus:outline-none focus:border-[#5B7CFA]"
+                />
+                <div className="flex flex-wrap gap-2 text-xs">
+                  <label className="px-3 py-2 rounded-lg bg-[#5B7CFA] hover:bg-[#4B6CF0] text-white font-semibold cursor-pointer">
+                    {song ? 'Change sound file' : 'Upload sound file'}
+                    <input type="file" accept={AUDIO_ACCEPT} onChange={handleSongPick} className="hidden" />
+                  </label>
+                  <label className="px-3 py-2 rounded-lg bg-[#181C25] border border-white/10 text-[#D1D5DB] cursor-pointer">
+                    {songCover ? 'Change cover' : 'Add cover art (optional)'}
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp,image/gif"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!f) return;
+                        const err = f.type.startsWith('image/') ? validateAttachmentFile(f) : 'Cover art must be an image.';
+                        if (err) setError(err);
+                        else setSongCover(f);
+                      }}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                {song && (
+                  <p className="text-xs text-[#9CA3AF] truncate">
+                    {song.file.name} · {formatDuration(song.duration)} · {formatFileSize(song.file.size)}
+                  </p>
+                )}
+                {songCover && <p className="text-xs text-[#9CA3AF] truncate">Cover: {songCover.name}</p>}
+              </div>
+            )}
+
+            <MentionInput
+              multiline
+              rows={songMode ? 2 : 3}
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onValueChange={setContent}
               maxLength={1000}
-              placeholder="Share an update, thought, or :emoji:..."
+              placeholder={songMode ? 'Say something about your song (optional)...' : 'Share an update, thought, or :emoji:...'}
               className="w-full bg-transparent text-sm text-white placeholder-[#6B7280] resize-none focus:outline-none leading-relaxed"
             />
 
-            {pendingFiles.length > 0 && (
+            {!songMode && pendingFiles.length > 0 && (
               <div className="flex flex-wrap gap-2 mt-2">
                 {pendingFiles.map((file, idx) => (
                   <div
@@ -434,16 +394,30 @@ export function SocialFeedView({
 
             <div className="flex items-center justify-between pt-3 mt-3 border-t border-white/8 relative">
               <div className="flex items-center gap-1">
-                <label className="p-2 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/5 cursor-pointer transition-colors" title="Attach media">
-                  <ImageIcon className="w-4 h-4" />
-                  <input
-                    type="file"
-                    multiple
-                    accept="image/*,video/mp4,video/webm,audio/*"
-                    onChange={handleFilePick}
-                    className="hidden"
-                  />
-                </label>
+                {!songMode && (
+                  <label className="p-2 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/5 cursor-pointer transition-colors" title="Attach images, video or sound files">
+                    <ImageIcon className="w-4 h-4" />
+                    <input
+                      type="file"
+                      multiple
+                      accept={`image/*,video/mp4,video/webm,${AUDIO_ACCEPT}`}
+                      onChange={handleFilePick}
+                      className="hidden"
+                    />
+                  </label>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => (songMode ? clearSong() : setSongMode(true))}
+                  aria-pressed={songMode}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${
+                    songMode ? 'bg-[#5B7CFA]/20 text-[#7C96FF]' : 'text-[#9CA3AF] hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  <Music className="w-4 h-4" />
+                  <span>Song Post</span>
+                </button>
 
                 <button
                   type="button"
@@ -472,7 +446,7 @@ export function SocialFeedView({
                 <button
                   type="submit"
                   data-sound-custom="true"
-                  disabled={posting || (!content.trim() && pendingFiles.length === 0)}
+                  disabled={posting || !canPost}
                   className="px-4 py-1.5 rounded-lg bg-[#5B7CFA] hover:bg-[#4B6CF0] disabled:opacity-40 text-white text-xs font-semibold transition-colors whitespace-nowrap"
                 >
                   {posting ? 'Posting...' : 'Post'}
@@ -532,10 +506,10 @@ export function SocialFeedView({
                 initialComments={commentsByPost[targetId]}
                 onOpenProfile={onOpenProfile}
                 onOpenProfileByUsername={onOpenProfileByUsername}
-                onToggleLikePost={toggleLike}
+                onToggleLikePost={actions.toggleLike}
                 onRepostPost={handleRepost}
-                onDeletePost={handleDeletePost}
-                onReplyCountDelta={handleReplyCountDelta}
+                onDeletePost={actions.remove}
+                onReplyCountDelta={actions.replyCountDelta}
               />
             );
           })}

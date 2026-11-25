@@ -1,0 +1,20 @@
+// Generated automatically from public/emojis. Do not edit by hand.
+export const BUILTIN_EMOJIS = [
+  '100',
+  'check',
+  'cool',
+  'crown',
+  'cry',
+  'eyes',
+  'fire',
+  'heart',
+  'laugh',
+  'mindblown',
+  'party',
+  'rocket',
+  'shock',
+  'shocked',
+  'sparkles',
+  'thumbsup',
+  'wave',
+] as const;

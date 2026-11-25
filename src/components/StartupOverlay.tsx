@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { VesperLogoMark } from './VesperLogo';
 import { getSoundPreference } from '../lib/utils';
 import { loadSoundsManifest, playSound, preloadSounds } from '../lib/sounds';
@@ -6,6 +6,7 @@ import { loadSoundsManifest, playSound, preloadSounds } from '../lib/sounds';
 export function StartupOverlay() {
   const [visible, setVisible] = useState(true);
   const [started, setStarted] = useState(false);
+  const startedRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -17,22 +18,19 @@ export function StartupOverlay() {
     });
 
     const startWebsite = () => {
-      if (!active) return;
-      setStarted((alreadyStarted) => {
-        if (alreadyStarted) return alreadyStarted;
+      if (!active || startedRef.current) return;
+      startedRef.current = true;
+      setStarted(true);
 
-        // The first click/tap/key press starts the visual sequence and sound together.
-        if (getSoundPreference()) {
-          window.setTimeout(() => playSound('startup'), 80);
-        }
+      // The first click/tap/key press starts the visual sequence and sound together.
+      if (getSoundPreference()) {
+        window.setTimeout(() => playSound('startup'), 80);
+      }
 
-        const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-        timer = window.setTimeout(() => {
-          if (active) setVisible(false);
-        }, reducedMotion ? 400 : 2050);
-
-        return true;
-      });
+      const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+      timer = window.setTimeout(() => {
+        if (active) setVisible(false);
+      }, reducedMotion ? 400 : 2050);
     };
 
     // Capture the very first interaction anywhere on the page.

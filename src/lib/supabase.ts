@@ -11,6 +11,29 @@ interface PublicSupabaseConfig {
 let clientInstance: SupabaseClient | null = null;
 let activeConfig: PublicSupabaseConfig | null = null;
 
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+  timeoutMessage: string
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = window.setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) throw new Error(timeoutMessage);
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 function normalizeSupabaseUrl(raw: string): string {
   const trimmed = raw.trim().replace(/\/+$/, '');
   const dashMatch = trimmed.match(/^https:\/\/supabase\.com\/dashboard\/project\/([a-z0-9-]+)/i);
@@ -66,9 +89,20 @@ async function verifySupabaseDirect(cfg: PublicSupabaseConfig): Promise<PublicSu
   if (isServiceRoleKeyClient(cfg.supabaseAnonKey)) {
     throw new Error('You entered a secret/service_role key. Only your public anon/publishable key is allowed here.');
   }
-  const res = await fetch(`${cfg.supabaseUrl}/auth/v1/settings`, {
-    headers: { apikey: cfg.supabaseAnonKey },
-  });
+
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      `${cfg.supabaseUrl}/auth/v1/settings`,
+      { headers: { apikey: cfg.supabaseAnonKey } },
+      12000,
+      'Supabase did not respond within 12 seconds. Check that the project is active and the Project URL is correct.'
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('12 seconds')) throw error;
+    throw new Error('Could not reach Supabase. Check the Project URL, public key, project status, and network connection.');
+  }
+
   if (res.status === 401 || res.status === 403) {
     throw new Error('Supabase rejected that public key. Double-check Project Settings -> API.');
   }
@@ -83,11 +117,16 @@ async function syncPublicConfigToServer(
   strict: boolean
 ): Promise<PublicSupabaseConfig> {
   try {
-    const res = await fetch(`${import.meta.env.BASE_URL}api/config/public`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(cfg),
-    });
+    const res = await fetchWithTimeout(
+      `${import.meta.env.BASE_URL}api/config/public`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(cfg),
+      },
+      4000,
+      'Server configuration endpoint timed out.'
+    );
     const isJson = res.headers.get('content-type')?.includes('application/json');
     if (!isJson || res.status === 404 || res.status === 405) {
       // Running on static hosting (e.g. GitHub Pages) without Express backend: verify directly
@@ -109,9 +148,10 @@ async function syncPublicConfigToServer(
     };
   } catch (err) {
     if (!strict) return cfg;
-    if (err instanceof Error && err.message && !/failed to fetch/i.test(err.message)) {
+    if (err instanceof Error && !/failed to fetch|timed out/i.test(err.message)) {
       throw err;
     }
+    // Static hosts do not provide this API route; fall back to a direct Supabase check.
     return verifySupabaseDirect(cfg);
   }
 }
@@ -148,7 +188,7 @@ export async function initSupabase(): Promise<{
       }
     }
   } catch {
-    // fallback to browser saved public config
+    // fallback to browser saved config
   }
 
   const saved = readBrowserSavedConfig();

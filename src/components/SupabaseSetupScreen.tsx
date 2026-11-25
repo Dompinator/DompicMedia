@@ -42,12 +42,16 @@ export function SupabaseSetupScreen({ onConnected, onClose }: SupabaseSetupScree
 
   return (
     <div className="min-h-screen bg-[#0B0D11] text-[#F3F4F6] flex flex-col items-center justify-center px-4 py-12">
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Back to login"
+        title="Back to login"
+        className="fixed top-5 right-5 z-50 flex h-12 w-12 items-center justify-center rounded-xl border border-white/25 bg-[#202633] text-white shadow-xl hover:bg-[#34415B] transition-colors"
+      >
+        <span className="text-3xl leading-none font-semibold" aria-hidden="true">×</span>
+      </button>
       <div className="w-full max-w-4xl">
-        <div className="flex justify-end mb-3">
-          <button type="button" onClick={onClose} aria-label="Back to login" title="Back to login" className="inline-flex items-center justify-center w-9 h-9 rounded-lg border border-white/10 bg-[#12151C] text-[#9CA3AF] hover:text-white hover:bg-white/10 transition-colors">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
         <div className="flex items-center gap-3 mb-8">
           <VesperLogoMark className="w-10 h-10" />
           <div>

@@ -88,15 +88,15 @@ export function playSound(name: SoundName, forceEnabled?: boolean): boolean {
   // the site's /Sounds directory during the static build.
   const url = soundsMap[name] || resolveAssetUrl(`Sounds/${name}.mp3`);
 
-  // The join cue is played directly from the button click. Use a fresh
-  // audio element for it so a preloaded/cached element cannot retain a
-  // previous playback state or fail when the room is entered after a delay.
-  let audio = name === 'join_call' ? undefined : audioCache.get(name);
+  // Reuse the preloaded audio element for every sound, including join_call.
+  // This is the same playback path used by leave_call and the other working cues.
+  let audio = audioCache.get(name);
   if (!audio || audio.src !== new URL(url, window.location.href).href) {
     audio = new Audio(url);
     audio.preload = 'auto';
     audio.volume = name === 'click' ? 0.35 : 0.6;
-    if (name !== 'join_call') audioCache.set(name, audio);
+    audioCache.set(name, audio);
+    audio.load();
   }
 
   try {

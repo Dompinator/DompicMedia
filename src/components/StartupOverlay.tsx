@@ -1,13 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { VesperLogoMark } from './VesperLogo';
 import { getSoundPreference, playStartupSound } from '../lib/utils';
+import { loadSoundsManifest, playSound } from '../lib/sounds';
 
 export function StartupOverlay() {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
     const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    playStartupSound(getSoundPreference());
+    const enabled = getSoundPreference();
+
+    loadSoundsManifest().then(() => {
+      if (!playSound('startup', enabled)) {
+        playStartupSound(enabled);
+      }
+    });
 
     const timer = window.setTimeout(
       () => {

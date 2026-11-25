@@ -12,9 +12,8 @@ import {
 } from 'lucide-react';
 import { DmPrivacy, FriendRequest, FriendRequestPrivacy, GlobalEmoji, Post, PostMedia, Profile } from '../types';
 import { getSupabase } from '../lib/supabase';
-import { formatRelativeTime } from '../lib/utils';
 import { Avatar } from './Avatar';
-import { RichTextWithEmojis } from './CustomEmoji';
+import { CommentNode, fetchCommentsMapForPosts, PostCard } from './PostCard';
 
 interface ProfileViewProps {
   profileId: string;
@@ -36,6 +35,7 @@ export function ProfileView({
   const isOwn = profileId === currentUser.id;
   const [profile, setProfile] = useState<Profile | null>(isOwn ? currentUser : null);
   const [posts, setPosts] = useState<Post[]>([]);
+  const [commentsByPost, setCommentsByPost] = useState<Record<string, CommentNode[]>>({});
   const [followersCount, setFollowersCount] = useState(0);
   const [followingCount, setFollowingCount] = useState(0);
   const [friendsCount, setFriendsCount] = useState(0);
@@ -80,15 +80,29 @@ export function ProfileView({
           .limit(20),
       ]);
 
+      const rawPosts = (postsRes.data || []) as Array<Record<string, unknown>>;
+      const postIds = rawPosts.map((p) => p.id as string);
+      let likedSet = new Set<string>();
+      if (postIds.length > 0) {
+        const { data: myLikes } = await supabase
+          .from('post_likes')
+          .select('post_id')
+          .eq('user_id', currentUser.id)
+          .in('post_id', postIds);
+        likedSet = new Set((myLikes || []).map((l) => l.post_id as string));
+      }
+
+      const hydratedPosts = rawPosts.map((r) => ({
+        ...(r as unknown as Post),
+        media_urls: Array.isArray(r.media_urls) ? (r.media_urls as PostMedia[]) : [],
+        liked_by_me: likedSet.has(r.id as string),
+      }));
+
       setFollowersCount(followersRes.count || 0);
       setFollowingCount(followingRes.count || 0);
       setFriendsCount((friendsARes.count || 0) + (friendsBRes.count || 0));
-      setPosts(
-        (postsRes.data || []).map((r) => ({
-          ...(r as unknown as Post),
-          media_urls: Array.isArray(r.media_urls) ? (r.media_urls as PostMedia[]) : [],
-        }))
-      );
+      setPosts(hydratedPosts);
+      setCommentsByPost(await fetchCommentsMapForPosts(postIds, currentUser.id));
 
       if (!isOwn) {
         const uA = currentUser.id < profileId ? currentUser.id : profileId;
@@ -302,8 +316,51 @@ export function ProfileView({
     );
   }
 
+  const openProfileByUsername = async (username: string) => {
+    const { data } = await getSupabase()
+      .from('profiles')
+      .select('id')
+      .eq('username', username.toLowerCase())
+      .maybeSingle();
+    if (data?.id) {
+      onOpenProfile(data.id as string);
+    }
+  };
+
+  const toggleLikePost = async (target: Post) => {
+    const supabase = getSupabase();
+    const currentlyLiked = Boolean(target.liked_by_me);
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === target.id
+          ? {
+              ...p,
+              liked_by_me: !currentlyLiked,
+              likes_count: Math.max(0, p.likes_count + (currentlyLiked ? -1 : 1)),
+            }
+          : p
+      )
+    );
+    if (currentlyLiked) {
+      await supabase
+        .from('post_likes')
+        .delete()
+        .eq('post_id', target.id)
+        .eq('user_id', currentUser.id);
+    } else {
+      await supabase.from('post_likes').insert({ post_id: target.id, user_id: currentUser.id });
+    }
+  };
+
+  const handleDeletePost = async (postId: string) => {
+    const { error: delErr } = await getSupabase().from('posts').delete().eq('id', postId);
+    if (!delErr) {
+      setPosts((prev) => prev.filter((p) => p.id !== postId));
+    }
+  };
+
   return (
-    <div className="max-w-3xl mx-auto w-full px-4 py-6">
+    <div className="max-w-5xl mx-auto w-full px-4 py-6">
       {error && (
         <div className="mb-4 rounded-xl bg-[#EF4444]/10 border border-[#EF4444]/30 px-4 py-3 text-xs text-[#FCA5A5] flex items-center justify-between">
           <span>{error}</span>
@@ -479,42 +536,26 @@ export function ProfileView({
           No posts published yet.
         </div>
       ) : (
-        <div className="divide-y divide-white/8 bg-[#12151C] border border-white/8 rounded-2xl overflow-hidden">
+        <div className="space-y-4">
           {posts.map((post) => (
-            <article key={post.id} className="p-4">
-              <div className="flex items-center gap-2 text-xs mb-1.5">
-                <button
-                  type="button"
-                  onClick={() => onOpenProfile(profile.id)}
-                  className="font-semibold text-white hover:underline"
-                >
-                  {profile.display_name}
-                </button>
-                <span className="text-[#9CA3AF]">@{profile.username}</span>
-                <span className="text-[#6B7280]">·</span>
-                <time className="font-mono text-[#9CA3AF]">{formatRelativeTime(post.created_at)}</time>
-              </div>
-              {post.content && (
-                <div className="text-sm text-[#E5E7EB] mb-2">
-                  <RichTextWithEmojis text={post.content} globalEmojis={globalEmojis} />
-                </div>
-              )}
-              {post.media_urls.length > 0 && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2">
-                  {post.media_urls.map((m, idx) =>
-                    m.category === 'image' ? (
-                      <img
-                        key={idx}
-                        src={m.url}
-                        alt={m.name}
-                        referrerPolicy="no-referrer"
-                        className="rounded-xl max-h-64 w-full object-cover border border-white/10"
-                      />
-                    ) : null
-                  )}
-                </div>
-              )}
-            </article>
+            <PostCard
+              key={post.id}
+              post={post}
+              currentUser={currentUser}
+              globalEmojis={globalEmojis}
+              initialComments={commentsByPost[post.id]}
+              onOpenProfile={onOpenProfile}
+              onOpenProfileByUsername={openProfileByUsername}
+              onToggleLikePost={toggleLikePost}
+              onDeletePost={isOwn ? handleDeletePost : undefined}
+              onReplyCountDelta={(pid, delta) =>
+                setPosts((prev) =>
+                  prev.map((p) =>
+                    p.id === pid ? { ...p, replies_count: Math.max(0, p.replies_count + delta) } : p
+                  )
+                )
+              }
+            />
           ))}
         </div>
       )}

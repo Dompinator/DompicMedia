@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { Profile, ServerChannel, VoiceParticipant } from '../types';
 import { getActiveSupabaseConfig, getSupabase } from '../lib/supabase';
+import { playSound } from '../lib/sounds';
 import { Avatar } from './Avatar';
 
 interface VoiceRoomStageProps {
@@ -744,6 +745,7 @@ export function VoiceRoomStage({
           { onConflict: 'channel_id,user_id' }
         );
         notifyServerPresenceChanged();
+        playSound('join_call');
 
         const rtcChannel = supabase.channel(`dompic-rtc:${channel.id}`);
         signalChannelRef.current = rtcChannel;
@@ -872,6 +874,7 @@ export function VoiceRoomStage({
   };
 
   const toggleMute = async () => {
+    playSound('mute');
     const nextMuted = !muted;
     setMuted(nextMuted);
     localStreamRef.current?.getAudioTracks().forEach((t) => {
@@ -912,6 +915,7 @@ export function VoiceRoomStage({
   };
 
   const toggleVideo = async () => {
+    playSound('camera');
     setConnectionError(null);
     if (videoEnabled) {
       localStreamRef.current?.getVideoTracks().forEach((t) => {
@@ -955,6 +959,7 @@ export function VoiceRoomStage({
   };
 
   const toggleScreenShare = async () => {
+    playSound('camera');
     setConnectionError(null);
     if (screenSharing) {
       localStreamRef.current?.getVideoTracks().forEach((t) => {
@@ -1027,7 +1032,9 @@ export function VoiceRoomStage({
 
           <button
             type="button"
+            data-sound-custom="true"
             onClick={async () => {
+              playSound('leave_call');
               await cleanupConnections();
               onLeave();
             }}
@@ -1104,6 +1111,7 @@ export function VoiceRoomStage({
       <div className="p-4 border-t border-white/8 bg-[#12151C] flex items-center justify-center gap-3 shrink-0">
         <button
           type="button"
+          data-sound-custom="true"
           onClick={toggleMute}
           className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-colors ${
             muted
@@ -1117,6 +1125,7 @@ export function VoiceRoomStage({
 
         <button
           type="button"
+          data-sound-custom="true"
           onClick={toggleVideo}
           className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-colors ${
             videoEnabled && !screenSharing
@@ -1130,6 +1139,7 @@ export function VoiceRoomStage({
 
         <button
           type="button"
+          data-sound-custom="true"
           onClick={toggleScreenShare}
           className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold transition-colors ${
             screenSharing

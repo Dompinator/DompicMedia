@@ -192,9 +192,53 @@ interface RelayPeer {
   channelId: string;
 }
 
+const SOUND_NAMES = new Set([
+  'startup',
+  'click',
+  'leave_call',
+  'join_call',
+  'mute',
+  'camera',
+  'post',
+  'like',
+]);
+const SOUND_EXTS = new Set(['.wav', '.mp3', '.ogg', '.m4a', '.webm', '.aac', '.flac']);
+
 async function startServer() {
   const app = express();
   app.use(express.json({ limit: '2mb' }));
+
+  const rootSoundsDir = path.resolve(process.cwd(), 'Sounds');
+  const publicSoundsDir = path.resolve(process.cwd(), 'public/Sounds');
+  if (fs.existsSync(rootSoundsDir)) {
+    app.use('/Sounds', express.static(rootSoundsDir));
+    app.use('/sounds', express.static(rootSoundsDir));
+  }
+  if (fs.existsSync(publicSoundsDir)) {
+    app.use('/Sounds', express.static(publicSoundsDir));
+    app.use('/sounds', express.static(publicSoundsDir));
+  }
+
+  app.get('/api/sounds', (_req: Request, res: Response) => {
+    const sounds: Record<string, string> = {};
+    for (const dir of [rootSoundsDir, publicSoundsDir]) {
+      if (!fs.existsSync(dir)) continue;
+      try {
+        const files = fs.readdirSync(dir);
+        for (const file of files) {
+          const parsed = path.parse(file);
+          const base = parsed.name.toLowerCase();
+          const ext = parsed.ext.toLowerCase();
+          if (!SOUND_NAMES.has(base) || !SOUND_EXTS.has(ext) || sounds[base]) continue;
+          const stat = fs.statSync(path.join(dir, file));
+          sounds[base] = `/Sounds/${encodeURIComponent(file)}?v=${Math.floor(stat.mtimeMs)}`;
+        }
+      } catch {
+        // ignore unreadable dir
+      }
+    }
+    res.json({ sounds });
+  });
 
   app.get('/api/health', (_req: Request, res: Response) => {
     const hasTurn = Boolean(

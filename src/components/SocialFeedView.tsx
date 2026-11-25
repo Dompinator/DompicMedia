@@ -1,20 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
-  Heart,
   Image as ImageIcon,
-  Loader2,
-  MessageSquare,
-  Repeat2,
-  Send,
   Smile,
-  Trash2,
   X,
 } from 'lucide-react';
 import { GlobalEmoji, Post, PostMedia, Profile } from '../types';
 import { getSupabase } from '../lib/supabase';
-import { categorizeMime, formatFileSize, formatRelativeTime, validateAttachmentFile } from '../lib/utils';
+import { categorizeMime, formatFileSize, validateAttachmentFile } from '../lib/utils';
+import { playSound } from '../lib/sounds';
 import { Avatar } from './Avatar';
-import { EmojiPicker, RichTextWithEmojis } from './CustomEmoji';
+import { EmojiPicker } from './CustomEmoji';
+import { CommentNode, fetchCommentsMapForPosts, PostCard } from './PostCard';
 
 interface SocialFeedViewProps {
   currentUser: Profile;
@@ -33,6 +29,7 @@ export function SocialFeedView({
 }: SocialFeedViewProps) {
   const [tab, setTab] = useState<'following' | 'discover'>('following');
   const [posts, setPosts] = useState<Post[]>([]);
+  const [commentsByPost, setCommentsByPost] = useState<Record<string, CommentNode[]>>({});
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
@@ -43,13 +40,6 @@ export function SocialFeedView({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [posting, setPosting] = useState(false);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
-
-  // Reply modal/drawer state
-  const [activeReplyPost, setActiveReplyPost] = useState<Post | null>(null);
-  const [replies, setReplies] = useState<Post[]>([]);
-  const [loadingReplies, setLoadingReplies] = useState(false);
-  const [replyText, setReplyText] = useState('');
-  const [sendingReply, setSendingReply] = useState(false);
 
   const hydratePosts = useCallback(
     async (rawPosts: Array<Record<string, unknown>>): Promise<Post[]> => {
@@ -109,7 +99,6 @@ export function SocialFeedView({
 
         const hydrated = await hydratePosts(data || []);
 
-        // Hydrate repost targets if any
         const repostIds = hydrated
           .map((p) => p.repost_of_id)
           .filter((id): id is string => Boolean(id));
@@ -118,9 +107,10 @@ export function SocialFeedView({
             .from('posts')
             .select('*, author:profiles!posts_author_id_fkey(*)')
             .in('id', repostIds);
+          const origHydrated = await hydratePosts(origPosts || []);
           const origMap = new Map<string, Post>();
-          for (const op of origPosts || []) {
-            origMap.set(op.id as string, op as unknown as Post);
+          for (const op of origHydrated) {
+            origMap.set(op.id, op);
           }
           for (const p of hydrated) {
             if (p.repost_of_id) {
@@ -129,8 +119,14 @@ export function SocialFeedView({
           }
         }
 
+        const displayIds = Array.from(
+          new Set(hydrated.map((p) => (p.repost_of ? p.repost_of.id : p.id)))
+        );
+        const fetchedComments = await fetchCommentsMapForPosts(displayIds, currentUser.id);
+
         setHasMore((data || []).length === PAGE_SIZE);
         setPosts((prev) => (append ? [...prev, ...hydrated] : hydrated));
+        setCommentsByPost((prev) => (append ? { ...prev, ...fetchedComments } : fetchedComments));
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load feed.');
       } finally {
@@ -239,6 +235,8 @@ export function SocialFeedView({
 
       if (insErr) throw insErr;
 
+      playSound('post');
+
       const [hydrated] = await hydratePosts([inserted]);
       setPosts((prev) => (prev.some((p) => p.id === hydrated.id) ? prev : [hydrated, ...prev]));
       setContent('');
@@ -257,15 +255,26 @@ export function SocialFeedView({
     const currentlyLiked = Boolean(post.liked_by_me);
 
     setPosts((prev) =>
-      prev.map((p) =>
-        p.id === targetId
-          ? {
-              ...p,
+      prev.map((p) => {
+        if (p.id === targetId) {
+          return {
+            ...p,
+            liked_by_me: !currentlyLiked,
+            likes_count: Math.max(0, p.likes_count + (currentlyLiked ? -1 : 1)),
+          };
+        }
+        if (p.repost_of && p.repost_of.id === targetId) {
+          return {
+            ...p,
+            repost_of: {
+              ...p.repost_of,
               liked_by_me: !currentlyLiked,
-              likes_count: Math.max(0, p.likes_count + (currentlyLiked ? -1 : 1)),
-            }
-          : p
-      )
+              likes_count: Math.max(0, p.repost_of.likes_count + (currentlyLiked ? -1 : 1)),
+            },
+          };
+        }
+        return p;
+      })
     );
 
     if (currentlyLiked) {
@@ -348,64 +357,18 @@ export function SocialFeedView({
     }
   };
 
-  const openReplies = async (post: Post) => {
-    setActiveReplyPost(post);
-    setLoadingReplies(true);
-    try {
-      const supabase = getSupabase();
-      const { data } = await supabase
-        .from('posts')
-        .select('*, author:profiles!posts_author_id_fkey(*)')
-        .eq('reply_to_id', post.id)
-        .order('created_at', { ascending: true })
-        .limit(50);
-      setReplies((data || []) as unknown as Post[]);
-    } finally {
-      setLoadingReplies(false);
-    }
-  };
-
-  const submitReply = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!activeReplyPost || !replyText.trim()) return;
-    setSendingReply(true);
-    try {
-      const supabase = getSupabase();
-      const { data, error: repErr } = await supabase
-        .from('posts')
-        .insert({
-          author_id: currentUser.id,
-          content: replyText.trim(),
-          reply_to_id: activeReplyPost.id,
-        })
-        .select('*, author:profiles!posts_author_id_fkey(*)')
-        .single();
-      if (repErr) throw repErr;
-
-      if (activeReplyPost.author_id !== currentUser.id) {
-        await supabase.from('notifications').insert({
-          recipient_id: activeReplyPost.author_id,
-          actor_id: currentUser.id,
-          type: 'post_reply',
-          entity_id: activeReplyPost.id,
-          metadata: { preview: replyText.trim().slice(0, 80) },
-        });
-      }
-
-      setReplies((prev) => [...prev, data as unknown as Post]);
-      setPosts((prev) =>
-        prev.map((p) =>
-          p.id === activeReplyPost.id ? { ...p, replies_count: p.replies_count + 1 } : p
-        )
-      );
-      setReplyText('');
-    } finally {
-      setSendingReply(false);
-    }
+  const handleReplyCountDelta = (postId: string, delta: number) => {
+    setPosts((prev) =>
+      prev.map((p) =>
+        p.id === postId
+          ? { ...p, replies_count: Math.max(0, p.replies_count + delta) }
+          : p
+      )
+    );
   };
 
   return (
-    <div className="max-w-2xl mx-auto w-full px-4 py-6">
+    <div className="max-w-5xl mx-auto w-full px-4 py-6">
       {/* Segmented Feed Filter */}
       <div className="flex items-center justify-between border-b border-white/8 pb-4 mb-5">
         <h2 className="font-display text-lg font-bold text-white">Home Feed</h2>
@@ -434,7 +397,7 @@ export function SocialFeedView({
       {/* Composer */}
       <form
         onSubmit={handleCreatePost}
-        className="bg-[#12151C] border border-white/8 rounded-2xl p-4 mb-6"
+        className="bg-[#12151C] border border-white/8 rounded-2xl p-4 mb-6 max-w-3xl"
       >
         <div className="flex gap-3">
           <Avatar src={currentUser.avatar_url} name={currentUser.display_name} size="md" />
@@ -508,6 +471,7 @@ export function SocialFeedView({
                 </span>
                 <button
                   type="submit"
+                  data-sound-custom="true"
                   disabled={posting || (!content.trim() && pendingFiles.length === 0)}
                   className="px-4 py-1.5 rounded-lg bg-[#5B7CFA] hover:bg-[#4B6CF0] disabled:opacity-40 text-white text-xs font-semibold transition-colors whitespace-nowrap"
                 >
@@ -532,7 +496,7 @@ export function SocialFeedView({
       {loading ? (
         <div className="space-y-4">
           {[1, 2, 3].map((i) => (
-            <div key={i} className="h-32 rounded-2xl bg-[#12151C] border border-white/6 animate-pulse" />
+            <div key={i} className="h-44 rounded-2xl bg-[#12151C] border border-white/6 animate-pulse" />
           ))}
         </div>
       ) : posts.length === 0 ? (
@@ -556,145 +520,23 @@ export function SocialFeedView({
           )}
         </div>
       ) : (
-        <div className="divide-y divide-white/8 bg-[#12151C] border border-white/8 rounded-2xl overflow-hidden">
+        <div className="space-y-4">
           {posts.map((post) => {
-            const displayPost = post.repost_of || post;
-            const author = displayPost.author;
+            const targetId = post.repost_of ? post.repost_of.id : post.id;
             return (
-              <article key={post.id} className="p-4 hover:bg-white/[0.015] transition-colors">
-                {post.repost_of && (
-                  <div className="flex items-center gap-1.5 text-xs text-[#9CA3AF] mb-2 pl-12">
-                    <Repeat2 className="w-3.5 h-3.5 text-[#22C55E]" />
-                    <span>
-                      Reposted by{' '}
-                      <button
-                        type="button"
-                        onClick={() => onOpenProfile(post.author_id)}
-                        className="text-white hover:underline font-medium"
-                      >
-                        {post.author?.display_name || 'User'}
-                      </button>
-                    </span>
-                  </div>
-                )}
-
-                <div className="flex gap-3">
-                  <button
-                    type="button"
-                    onClick={() => author && onOpenProfile(author.id)}
-                    className="shrink-0 self-start"
-                  >
-                    <Avatar src={author?.avatar_url} name={author?.display_name || 'U'} size="md" />
-                  </button>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="flex items-center gap-2 min-w-0 text-sm">
-                        <button
-                          type="button"
-                          onClick={() => author && onOpenProfile(author.id)}
-                          className="font-semibold text-white hover:underline truncate"
-                        >
-                          {author?.display_name || 'Unknown'}
-                        </button>
-                        <span className="text-xs text-[#9CA3AF] truncate">
-                          @{author?.username || 'user'}
-                        </span>
-                        <span className="text-[#6B7280]" aria-hidden="true">·</span>
-                        <time className="text-xs font-mono text-[#9CA3AF] whitespace-nowrap">
-                          {formatRelativeTime(displayPost.created_at)}
-                        </time>
-                      </div>
-
-                      {post.author_id === currentUser.id && (
-                        <button
-                          type="button"
-                          onClick={() => handleDeletePost(post.id)}
-                          title="Delete post"
-                          className="p-1.5 rounded-lg text-[#6B7280] hover:text-[#EF4444] hover:bg-white/5 transition-colors"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
-                      )}
-                    </div>
-
-                    {displayPost.content && (
-                      <div className="text-sm text-[#E5E7EB] mb-3">
-                        <RichTextWithEmojis
-                          text={displayPost.content}
-                          globalEmojis={globalEmojis}
-                          onMentionClick={onOpenProfileByUsername}
-                        />
-                      </div>
-                    )}
-
-                    {displayPost.media_urls.length > 0 && (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                        {displayPost.media_urls.map((media, idx) => (
-                          <div key={idx} className="rounded-xl overflow-hidden border border-white/10 bg-[#0B0D11]">
-                            {media.category === 'image' ? (
-                              <img
-                                src={media.url}
-                                alt={media.name}
-                                referrerPolicy="no-referrer"
-                                className="w-full max-h-72 object-cover"
-                              />
-                            ) : media.category === 'video' ? (
-                              <video src={media.url} controls className="w-full max-h-72" />
-                            ) : media.category === 'audio' ? (
-                              <div className="p-3">
-                                <div className="text-xs text-[#D1D5DB] mb-1 truncate">{media.name}</div>
-                                <audio src={media.url} controls className="w-full h-9" />
-                              </div>
-                            ) : (
-                              <a
-                                href={media.url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="block p-3 text-xs text-[#5B7CFA] hover:underline truncate"
-                              >
-                                {media.name}
-                              </a>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Action Bar */}
-                    <div className="flex items-center gap-6 pt-1 text-xs text-[#9CA3AF]">
-                      <button
-                        type="button"
-                        onClick={() => openReplies(displayPost)}
-                        className="inline-flex items-center gap-1.5 hover:text-[#5B7CFA] transition-colors"
-                      >
-                        <MessageSquare className="w-4 h-4" />
-                        <span className="font-mono tabular-nums">{displayPost.replies_count}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => handleRepost(displayPost)}
-                        className="inline-flex items-center gap-1.5 hover:text-[#22C55E] transition-colors"
-                      >
-                        <Repeat2 className="w-4 h-4" />
-                        <span className="font-mono tabular-nums">{displayPost.reposts_count}</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => toggleLike(displayPost)}
-                        className={`inline-flex items-center gap-1.5 transition-colors ${
-                          displayPost.liked_by_me ? 'text-[#EF4444]' : 'hover:text-[#EF4444]'
-                        }`}
-                      >
-                        <Heart className={`w-4 h-4 ${displayPost.liked_by_me ? 'fill-current' : ''}`} />
-                        <span className="font-mono tabular-nums">{displayPost.likes_count}</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </article>
+              <PostCard
+                key={post.id}
+                post={post}
+                currentUser={currentUser}
+                globalEmojis={globalEmojis}
+                initialComments={commentsByPost[targetId]}
+                onOpenProfile={onOpenProfile}
+                onOpenProfileByUsername={onOpenProfileByUsername}
+                onToggleLikePost={toggleLike}
+                onRepostPost={handleRepost}
+                onDeletePost={handleDeletePost}
+                onReplyCountDelta={handleReplyCountDelta}
+              />
             );
           })}
         </div>
@@ -710,85 +552,6 @@ export function SocialFeedView({
           >
             {loadingMore ? 'Loading...' : 'Load older posts'}
           </button>
-        </div>
-      )}
-
-      {/* Reply Modal */}
-      {activeReplyPost && (
-        <div className="fixed inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-lg bg-[#12151C] border border-white/10 rounded-2xl overflow-hidden flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between px-5 py-3.5 border-b border-white/8">
-              <h3 className="font-display text-sm font-semibold text-white">
-                Replies to @{activeReplyPost.author?.username}
-              </h3>
-              <button
-                type="button"
-                onClick={() => setActiveReplyPost(null)}
-                className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/5"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-4 overflow-y-auto space-y-4 flex-1">
-              <div className="pb-3 border-b border-white/8 text-sm text-[#D1D5DB]">
-                <RichTextWithEmojis text={activeReplyPost.content} globalEmojis={globalEmojis} />
-              </div>
-
-              {loadingReplies ? (
-                <div className="py-6 flex justify-center">
-                  <Loader2 className="w-5 h-5 animate-spin text-[#5B7CFA]" />
-                </div>
-              ) : replies.length === 0 ? (
-                <p className="text-xs text-[#9CA3AF] py-4 text-center">No replies yet.</p>
-              ) : (
-                <div className="space-y-3">
-                  {replies.map((reply) => (
-                    <div key={reply.id} className="flex gap-2.5">
-                      <Avatar
-                        src={reply.author?.avatar_url}
-                        name={reply.author?.display_name || 'U'}
-                        size="sm"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 text-xs">
-                          <span className="font-semibold text-white">
-                            {reply.author?.display_name}
-                          </span>
-                          <span className="text-[#9CA3AF]">@{reply.author?.username}</span>
-                          <span className="text-[#6B7280]">·</span>
-                          <span className="font-mono text-[#6B7280]">
-                            {formatRelativeTime(reply.created_at)}
-                          </span>
-                        </div>
-                        <div className="text-sm text-[#E5E7EB] mt-0.5">
-                          <RichTextWithEmojis text={reply.content} globalEmojis={globalEmojis} />
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <form onSubmit={submitReply} className="p-3 border-t border-white/8 flex items-center gap-2">
-              <input
-                type="text"
-                value={replyText}
-                onChange={(e) => setReplyText(e.target.value)}
-                placeholder="Write a reply..."
-                maxLength={1000}
-                className="flex-1 rounded-lg bg-[#0B0D11] border border-white/10 px-3.5 py-2 text-sm text-white placeholder-[#6B7280] focus:outline-none focus:border-[#5B7CFA]"
-              />
-              <button
-                type="submit"
-                disabled={sendingReply || !replyText.trim()}
-                className="p-2.5 rounded-lg bg-[#5B7CFA] hover:bg-[#4B6CF0] disabled:opacity-40 text-white"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            </form>
-          </div>
         </div>
       )}
     </div>

@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { AppView, GlobalEmoji, Profile, Server } from './types';
 import { clearBrowserSupabaseConfig, getSupabase, initSupabase } from './lib/supabase';
+import { loadSoundsManifest, playSound } from './lib/sounds';
 import { StartupOverlay } from './components/StartupOverlay';
 import { VesperLogoMark } from './components/VesperLogo';
 import { SupabaseSetupScreen } from './components/SupabaseSetupScreen';
@@ -123,8 +124,23 @@ export default function App() {
   }, [loadUserWorkspace]);
 
   useEffect(() => {
+    loadSoundsManifest();
     bootstrap();
   }, [bootstrap]);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+      const interactive = target.closest('button, a, [role="button"]');
+      if (!interactive) return;
+      if ((interactive as HTMLButtonElement).disabled) return;
+      if (interactive.closest('[data-sound-custom="true"]')) return;
+      playSound('click');
+    };
+    document.addEventListener('click', onDocClick);
+    return () => document.removeEventListener('click', onDocClick);
+  }, []);
 
   useEffect(() => {
     if (!supabaseReady) return;

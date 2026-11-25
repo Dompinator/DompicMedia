@@ -5,43 +5,39 @@ import { loadSoundsManifest, playSound, preloadSounds } from '../lib/sounds';
 
 export function StartupOverlay() {
   const [visible, setVisible] = useState(true);
+  const [started, setStarted] = useState(false);
 
   useEffect(() => {
-    let startupPlayed = false;
     let active = true;
+    let timer: number | undefined;
 
-    // Load and preload files immediately, but wait for a real user gesture before
-    // playing startup.mp3. Browsers block audible autoplay on a fresh page load.
+    // Prepare the audio without starting the visual intro.
     void loadSoundsManifest().then(() => {
       if (active) preloadSounds();
     });
 
-    const playStartupAfterGesture = () => {
-      if (startupPlayed) return;
-      startupPlayed = true;
-      if (getSoundPreference()) {
-        window.setTimeout(() => playSound('startup'), 80);
-      }
-    };
-
-    window.addEventListener('pointerdown', playStartupAfterGesture, true);
-    window.addEventListener('keydown', playStartupAfterGesture, true);
-
-    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    let timer: number | undefined;
-
     const startWebsite = () => {
-      if (startupPlayed) return;
-      playStartupAfterGesture();
-      // Keep the blurred startup screen visible until the user starts the site.
-      // The actual intro animation then runs for its full duration.
-      timer = window.setTimeout(() => setVisible(false), reducedMotion ? 400 : 2050);
+      if (!active) return;
+      setStarted((alreadyStarted) => {
+        if (alreadyStarted) return alreadyStarted;
+
+        // The first click/tap/key press starts the visual sequence and sound together.
+        if (getSoundPreference()) {
+          window.setTimeout(() => playSound('startup'), 80);
+        }
+
+        const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+        timer = window.setTimeout(() => {
+          if (active) setVisible(false);
+        }, reducedMotion ? 400 : 2050);
+
+        return true;
+      });
     };
 
-    window.removeEventListener('pointerdown', playStartupAfterGesture, true);
-    window.removeEventListener('keydown', playStartupAfterGesture, true);
-    window.addEventListener('pointerdown', startWebsite, { capture: true, once: true });
-    window.addEventListener('keydown', startWebsite, { capture: true, once: true });
+    // Capture the very first interaction anywhere on the page.
+    window.addEventListener('pointerdown', startWebsite, true);
+    window.addEventListener('keydown', startWebsite, true);
 
     return () => {
       active = false;
@@ -55,7 +51,7 @@ export function StartupOverlay() {
 
   return (
     <div
-      className="vesper-startup-backdrop fixed inset-0 z-50 flex items-center justify-center bg-[#0B0D11]/95 backdrop-blur-sm pointer-events-none select-none"
+      className={`vesper-startup-backdrop fixed inset-0 z-[9999] flex items-center justify-center bg-[#0B0D11]/95 backdrop-blur-sm select-none ${started ? 'vesper-startup-running' : 'vesper-startup-waiting'}`}
       aria-hidden="true"
     >
       <div className="vesper-startup-logo flex flex-col items-center gap-3">

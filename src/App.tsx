@@ -2,16 +2,31 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   Bell,
   Compass,
+  Flag,
   Home,
   Loader2,
   Mail,
+  Menu,
   Plus,
   Settings,
   User as UserIcon,
   X,
 } from 'lucide-react';
-import { AppView, GlobalEmoji, Profile, Server } from './types';
-import { clearBrowserSupabaseConfig, getSupabase, initSupabase } from './lib/supabase';
+import { AppView, GlobalEmoji, Profile, ReportTargetType, Server } from './types';
+import {
+  clearBrowserSupabaseConfig,
+  finishPasswordRecovery,
+  getSupabase,
+  initSupabase,
+  passwordRecoveryPending,
+} from './lib/supabase';
+import { AppActions, AppContext } from './lib/appContext';
+import { useActivity } from './hooks/useActivity';
+import { PostDetailView } from './components/PostDetailView';
+import { ReportDialog } from './components/ReportDialog';
+import { ReportsAdminView } from './components/ReportsAdminView';
+import { ResetPasswordView } from './components/ResetPasswordView';
+import { MobileMenu } from './components/MobileMenu';
 import { loadSoundsManifest, playSound } from './lib/sounds';
 import { StartupOverlay } from './components/StartupOverlay';
 import { VesperLogoMark } from './components/VesperLogo';
@@ -35,8 +50,11 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [servers, setServers] = useState<Server[]>([]);
   const [globalEmojis, setGlobalEmojis] = useState<GlobalEmoji[]>([]);
-  const [unreadInbox, setUnreadInbox] = useState(0);
-  const [unreadDms, setUnreadDms] = useState(0);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [blockedIds, setBlockedIds] = useState<Set<string>>(new Set());
+  const [reportTarget, setReportTarget] = useState<{ type: ReportTargetType; id: string } | null>(null);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [recovering, setRecovering] = useState(passwordRecoveryPending);
 
   const [view, setView] = useState<AppView>({ kind: 'feed' });
   const [showCreateServer, setShowCreateServer] = useState(false);
@@ -44,6 +62,17 @@ export default function App() {
   const [newServerDesc, setNewServerDesc] = useState('');
   const [creatingServer, setCreatingServer] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
+
+  const {
+    unreadDmIds,
+    unreadInbox,
+    refresh: refreshActivity,
+  } = useActivity(currentUser ? sessionUserId : null, activeConversationId, setView);
+  const unreadDms = unreadDmIds.length;
+
+  useEffect(() => {
+    document.title = unreadDms + unreadInbox > 0 ? `(${unreadDms + unreadInbox}) DompicMEDIA` : 'DompicMEDIA';
+  }, [unreadDms, unreadInbox]);
 
   const loadUserWorkspace = useCallback(async (uid: string) => {
     const supabase = getSupabase();
@@ -65,27 +94,8 @@ export default function App() {
     setServers(srvList);
     setGlobalEmojis((emojiRes.data || []) as GlobalEmoji[]);
 
-    // Fetch initial unread counts
-    const [notifsCountRes, frCountRes, invCountRes] = await Promise.all([
-      supabase
-        .from('notifications')
-        .select('*', { count: 'exact', head: true })
-        .eq('recipient_id', uid)
-        .is('read_at', null),
-      supabase
-        .from('friend_requests')
-        .select('*', { count: 'exact', head: true })
-        .eq('receiver_id', uid)
-        .eq('status', 'pending'),
-      supabase
-        .from('server_invitations')
-        .select('*', { count: 'exact', head: true })
-        .eq('invitee_id', uid)
-        .eq('status', 'pending'),
-    ]);
-    setUnreadInbox(
-      (notifsCountRes.count || 0) + (frCountRes.count || 0) + (invCountRes.count || 0)
-    );
+    const { data: blocks } = await supabase.from('user_blocks').select('blocked_id').eq('blocker_id', uid);
+    setBlockedIds(new Set((blocks || []).map((b) => b.blocked_id as string)));
   }, []);
 
   const refreshServers = useCallback(async () => {
@@ -145,7 +155,8 @@ export default function App() {
   useEffect(() => {
     if (!supabaseReady) return;
     const supabase = getSupabase();
-    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'PASSWORD_RECOVERY') setRecovering(true);
       const uid = session?.user?.id || null;
       setSessionUserId(uid);
       if (uid) {
@@ -153,6 +164,9 @@ export default function App() {
       } else {
         setCurrentUser(null);
         setServers([]);
+        setBlockedIds(new Set());
+        setShowMobileMenu(false);
+        setReportTarget(null);
         setView({ kind: 'feed' });
       }
     });
@@ -170,6 +184,35 @@ export default function App() {
     if (data?.id) {
       setView({ kind: 'profile', userId: data.id as string });
     }
+  };
+
+  const setBlocked = useCallback(
+    async (userId: string, blocked: boolean): Promise<string | null> => {
+      if (!sessionUserId) return 'Sign in first.';
+      const supabase = getSupabase();
+      const { error } = blocked
+        ? await supabase.from('user_blocks').insert({ blocker_id: sessionUserId, blocked_id: userId })
+        : await supabase.from('user_blocks').delete().eq('blocker_id', sessionUserId).eq('blocked_id', userId);
+      if (error) return error.message;
+      setBlockedIds((prev) => {
+        const next = new Set(prev);
+        if (blocked) next.add(userId);
+        else next.delete(userId);
+        return next;
+      });
+      refreshActivity();
+      return null;
+    },
+    [refreshActivity, sessionUserId]
+  );
+
+  // Not memoized: openProfileByUsername only uses stable setters.
+  const appActions: AppActions = {
+    openProfileByUsername: (username) => openProfileByUsername(username),
+    openHashtag: (tag) => setView({ kind: 'explore', query: tag }),
+    report: (type, id) => setReportTarget({ type, id }),
+    blockedIds,
+    setBlocked,
   };
 
   const handleCreateServer = async (e: React.FormEvent) => {
@@ -201,7 +244,7 @@ export default function App() {
   };
 
   return (
-    <>
+    <AppContext.Provider value={appActions}>
       <StartupOverlay />
 
       {booting ? (
@@ -222,8 +265,15 @@ export default function App() {
             setForceSetup(true);
           }}
         />
+      ) : recovering ? (
+        <ResetPasswordView
+          onDone={() => {
+            finishPasswordRecovery();
+            setRecovering(false);
+          }}
+        />
       ) : (
-        <div className="h-screen w-screen overflow-hidden bg-[#0B0D11] text-[#F3F4F6] flex flex-col md:flex-row">
+        <div className="h-[100dvh] w-screen overflow-hidden bg-[#0B0D11] text-[#F3F4F6] flex flex-col md:flex-row">
           {/* Desktop Navigation & Server Rail */}
           <nav
             aria-label="Primary Navigation"
@@ -314,6 +364,16 @@ export default function App() {
             </div>
 
             <div className="pt-2 flex flex-col items-center gap-2">
+              {currentUser.platform_role === 'platform_admin' && (
+                <RailButton
+                  active={view.kind === 'reports'}
+                  onClick={() => setView({ kind: 'reports' })}
+                  label="Reports"
+                >
+                  <Flag className="w-5 h-5" />
+                </RailButton>
+              )}
+
               <RailButton
                 active={view.kind === 'settings'}
                 onClick={() => setView({ kind: 'settings' })}
@@ -349,6 +409,8 @@ export default function App() {
                 globalEmojis={globalEmojis}
                 onOpenProfile={(uid) => setView({ kind: 'profile', userId: uid })}
                 onRefreshEmojis={refreshEmojis}
+                initialQuery={view.query}
+                onOpenProfileByUsername={openProfileByUsername}
               />
             )}
 
@@ -359,7 +421,9 @@ export default function App() {
                   globalEmojis={globalEmojis}
                   initialConversationId={view.conversationId}
                   onOpenProfile={(uid) => setView({ kind: 'profile', userId: uid })}
-                  onUnreadCountChange={setUnreadDms}
+                  unreadIds={unreadDmIds}
+                  onActiveConversationChange={setActiveConversationId}
+                  onRead={refreshActivity}
                 />
               </div>
             )}
@@ -372,7 +436,8 @@ export default function App() {
                   await refreshServers();
                   setView({ kind: 'server', serverId: srvId });
                 }}
-                onUnreadCountChange={setUnreadInbox}
+                onChanged={refreshActivity}
+                navigate={setView}
               />
             )}
 
@@ -410,7 +475,22 @@ export default function App() {
                 currentUser={currentUser}
                 onSignedOut={() => setSessionUserId(null)}
                 onResetConnection={() => setForceSetup(true)}
+                onOpenReports={() => setView({ kind: 'reports' })}
               />
+            )}
+
+            {view.kind === 'post' && (
+              <PostDetailView
+                postId={view.postId}
+                currentUser={currentUser}
+                globalEmojis={globalEmojis}
+                onOpenProfile={(uid) => setView({ kind: 'profile', userId: uid })}
+                onOpenProfileByUsername={openProfileByUsername}
+              />
+            )}
+
+            {view.kind === 'reports' && currentUser.platform_role === 'platform_admin' && (
+              <ReportsAdminView onOpenProfile={(uid) => setView({ kind: 'profile', userId: uid })} />
             )}
           </main>
 
@@ -459,24 +539,34 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() => {
-                if (servers[0]) setView({ kind: 'server', serverId: servers[0].id });
-                else setShowCreateServer(true);
-              }}
-              className={`p-2 rounded-lg ${view.kind === 'server' ? 'text-[#5B7CFA]' : 'text-[#9CA3AF]'}`}
-              aria-label="Servers"
+              onClick={() => setShowMobileMenu(true)}
+              className={`p-2 rounded-lg ${
+                ['server', 'profile', 'settings', 'reports'].includes(view.kind) ? 'text-[#5B7CFA]' : 'text-[#9CA3AF]'
+              }`}
+              aria-label="Menu, servers and settings"
             >
-              <Plus className="w-5 h-5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setView({ kind: 'profile', userId: currentUser.id })}
-              className="p-1.5 rounded-lg"
-              aria-label="Profile"
-            >
-              <Avatar src={currentUser.avatar_url} name={currentUser.display_name} size="xs" />
+              <Menu className="w-5 h-5" />
             </button>
           </nav>
+
+          {showMobileMenu && (
+            <MobileMenu
+              currentUser={currentUser}
+              servers={servers}
+              navigate={setView}
+              onCreateServer={() => setShowCreateServer(true)}
+              onClose={() => setShowMobileMenu(false)}
+            />
+          )}
+
+          {reportTarget && (
+            <ReportDialog
+              key={reportTarget.id}
+              targetType={reportTarget.type}
+              targetId={reportTarget.id}
+              onClose={() => setReportTarget(null)}
+            />
+          )}
 
           {/* Create Server Modal */}
           {showCreateServer && (
@@ -550,7 +640,7 @@ export default function App() {
           )}
         </div>
       )}
-    </>
+    </AppContext.Provider>
   );
 }
 

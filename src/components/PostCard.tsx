@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   ChevronDown,
   ChevronUp,
+  Flag,
   Heart,
   Loader2,
   MessageSquare,
@@ -15,6 +16,10 @@ import { formatRelativeTime } from '../lib/utils';
 import { playSound } from '../lib/sounds';
 import { Avatar } from './Avatar';
 import { RichTextWithEmojis } from './CustomEmoji';
+import { MentionInput } from './MentionInput';
+import { SongPlayer } from './SongPlayer';
+import { sendNotification } from '../lib/notifications';
+import { useAppActions } from '../lib/appContext';
 
 export interface CommentNode extends Post {
   replies: Post[];
@@ -90,6 +95,7 @@ interface PostCardProps {
   currentUser: Profile;
   globalEmojis: GlobalEmoji[];
   initialComments?: CommentNode[];
+  expandThreads?: boolean;
   onOpenProfile: (userId: string) => void;
   onOpenProfileByUsername: (username: string) => void;
   onToggleLikePost: (post: Post) => void;
@@ -103,6 +109,7 @@ export function PostCard({
   currentUser,
   globalEmojis,
   initialComments,
+  expandThreads,
   onOpenProfile,
   onOpenProfileByUsername,
   onToggleLikePost,
@@ -112,6 +119,13 @@ export function PostCard({
 }: PostCardProps) {
   const displayPost = post.repost_of || post;
   const author = displayPost.author;
+  const isSong = Boolean(displayPost.song_title);
+  // The song player shows the sound file and cover art itself.
+  const songCover = isSong ? displayPost.media_urls.find((m) => m.category === 'image') : undefined;
+  const songAudio = isSong ? displayPost.media_urls.find((m) => m.category === 'audio') : undefined;
+  const otherMedia = displayPost.media_urls.filter((m) => m !== songCover && m !== songAudio);
+  const { report } = useAppActions();
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   const [comments, setComments] = useState<CommentNode[]>(initialComments || []);
   const [commentText, setCommentText] = useState('');
@@ -136,6 +150,7 @@ export function PostCard({
     const trimmed = commentText.trim();
     if (!trimmed) return;
     setSubmittingComment(true);
+    setCommentError(null);
     try {
       const supabase = getSupabase();
       const { data, error } = await supabase
@@ -147,12 +162,15 @@ export function PostCard({
         })
         .select('*, author:profiles!posts_author_id_fkey(*)')
         .single();
-      if (error) throw error;
+      if (error) {
+        setCommentError('Could not post your comment.');
+        return;
+      }
 
       playSound('post');
 
       if (displayPost.author_id !== currentUser.id) {
-        await supabase.from('notifications').insert({
+        await sendNotification({
           recipient_id: displayPost.author_id,
           actor_id: currentUser.id,
           type: 'post_reply',
@@ -181,6 +199,7 @@ export function PostCard({
     const trimmed = nestedReplyText.trim();
     if (!trimmed) return;
     setSubmittingNested(true);
+    setCommentError(null);
     try {
       const supabase = getSupabase();
       const { data, error } = await supabase
@@ -192,12 +211,15 @@ export function PostCard({
         })
         .select('*, author:profiles!posts_author_id_fkey(*)')
         .single();
-      if (error) throw error;
+      if (error) {
+        setCommentError('Could not post your comment.');
+        return;
+      }
 
       playSound('post');
 
       if (parentComment.author_id !== currentUser.id) {
-        await supabase.from('notifications').insert({
+        await sendNotification({
           recipient_id: parentComment.author_id,
           actor_id: currentUser.id,
           type: 'post_reply',
@@ -353,9 +375,11 @@ export function PostCard({
                   </div>
                 )}
 
-                {displayPost.media_urls.length > 0 && (
+                {isSong && <SongPlayer key={displayPost.id} post={displayPost} />}
+
+                {otherMedia.length > 0 && (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3">
-                    {displayPost.media_urls.map((media, idx) => (
+                    {otherMedia.map((media, idx) => (
                       <div key={idx} className="rounded-xl overflow-hidden border border-white/10 bg-[#0B0D11]">
                         {media.category === 'image' ? (
                           <img
@@ -449,6 +473,18 @@ export function PostCard({
               </span>
             </span>
 
+            {post.author_id !== currentUser.id && (
+              <button
+                type="button"
+                onClick={() => report('post', displayPost.id)}
+                title="Report post"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] text-[#9CA3AF] hover:text-[#EF4444] hover:bg-[#EF4444]/10 transition-colors"
+              >
+                <Flag className="w-3.5 h-3.5" />
+                <span>Report</span>
+              </button>
+            )}
+
             {post.author_id === currentUser.id && onDeletePost && (
               <button
                 type="button"
@@ -466,15 +502,16 @@ export function PostCard({
           <form onSubmit={handleSubmitComment} className="mb-3">
             <div className="flex items-center gap-2.5">
               <Avatar src={currentUser.avatar_url} name={currentUser.display_name} size="xs" />
-              <input
-                ref={commentInputRef}
+              <MentionInput
+                inputRef={commentInputRef}
+                wrapperClassName="flex-1"
                 type="text"
                 value={commentText}
                 onFocus={() => setCommentFocused(true)}
-                onChange={(e) => setCommentText(e.target.value)}
+                onValueChange={setCommentText}
                 placeholder="Add a comment..."
                 maxLength={1000}
-                className="flex-1 bg-transparent border-b border-white/15 focus:border-[#5B7CFA] py-1.5 text-xs text-white placeholder-[#6B7280] focus:outline-none transition-colors"
+                className="w-full bg-transparent border-b border-white/15 focus:border-[#5B7CFA] py-1.5 text-xs text-white placeholder-[#6B7280] focus:outline-none transition-colors"
               />
             </div>
 
@@ -506,6 +543,8 @@ export function PostCard({
             )}
           </form>
 
+          {commentError && <p className="mb-2 text-[11px] text-[#FCA5A5]">{commentError}</p>}
+
           {/* Comments + Collapsible Nested Replies */}
           <div className="flex-1 max-h-[300px] overflow-y-auto space-y-3.5 pr-1">
             {comments.length === 0 ? (
@@ -514,7 +553,7 @@ export function PostCard({
               </p>
             ) : (
               comments.map((comment) => {
-                const isExpanded = Boolean(expandedThreads[comment.id]);
+                const isExpanded = expandedThreads[comment.id] ?? Boolean(expandThreads);
                 const replyCount = comment.replies.length;
                 return (
                   <div key={comment.id} className="space-y-2">
@@ -545,6 +584,17 @@ export function PostCard({
                               {formatRelativeTime(comment.created_at)}
                             </span>
                           </div>
+
+                          {comment.author_id !== currentUser.id && (
+                            <button
+                              type="button"
+                              onClick={() => report('post', comment.id)}
+                              title="Report comment"
+                              className="p-1 rounded text-[#6B7280] hover:text-[#EF4444]"
+                            >
+                              <Flag className="w-3 h-3" />
+                            </button>
+                          )}
 
                           {comment.author_id === currentUser.id && (
                             <button
@@ -610,14 +660,15 @@ export function PostCard({
                                 name={currentUser.display_name}
                                 size="xs"
                               />
-                              <input
+                              <MentionInput
+                                wrapperClassName="flex-1"
                                 type="text"
                                 autoFocus
                                 value={nestedReplyText}
-                                onChange={(e) => setNestedReplyText(e.target.value)}
+                                onValueChange={setNestedReplyText}
                                 placeholder={`Reply to @${comment.author?.username || 'user'}...`}
                                 maxLength={1000}
-                                className="flex-1 bg-transparent border-b border-white/15 focus:border-[#5B7CFA] py-1 text-xs text-white placeholder-[#6B7280] focus:outline-none"
+                                className="w-full bg-transparent border-b border-white/15 focus:border-[#5B7CFA] py-1 text-xs text-white placeholder-[#6B7280] focus:outline-none"
                               />
                             </div>
                             <div className="flex justify-end gap-2">
@@ -700,6 +751,16 @@ export function PostCard({
                                         {formatRelativeTime(reply.created_at)}
                                       </span>
                                     </div>
+                                    {reply.author_id !== currentUser.id && (
+                                      <button
+                                        type="button"
+                                        onClick={() => report('post', reply.id)}
+                                        title="Report reply"
+                                        className="p-0.5 rounded text-[#6B7280] hover:text-[#EF4444]"
+                                      >
+                                        <Flag className="w-3 h-3" />
+                                      </button>
+                                    )}
                                     {reply.author_id === currentUser.id && (
                                       <button
                                         type="button"

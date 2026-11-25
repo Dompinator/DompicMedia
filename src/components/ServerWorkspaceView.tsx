@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowDown,
   ArrowUp,
+  Flag,
   Hash,
   Loader2,
   LogOut,
@@ -38,6 +39,11 @@ import {
   formatTimeClock,
   validateAttachmentFile,
 } from '../lib/utils';
+import { withResolvedType } from '../lib/audio';
+import { useAppActions } from '../lib/appContext';
+import { sendNotification } from '../lib/notifications';
+import { MessageEditor } from './MessageEditor';
+import { MentionInput } from './MentionInput';
 import { Avatar } from './Avatar';
 import { CustomEmojiImg, EmojiPicker, RichTextWithEmojis } from './CustomEmoji';
 import { AttachmentItem } from './AttachmentViewer';
@@ -103,6 +109,14 @@ export function ServerWorkspaceView({
   const [showServerSettings, setShowServerSettings] = useState(false);
   const [editServerName, setEditServerName] = useState('');
   const [editServerDesc, setEditServerDesc] = useState('');
+
+  const { report, blockedIds } = useAppActions();
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // A mention notification can point at another channel while this server is already open.
+  useEffect(() => {
+    if (initialChannelId) setActiveChannelId(initialChannelId);
+  }, [initialChannelId]);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const typingTimerRef = useRef<number | null>(null);
@@ -301,6 +315,18 @@ export function ServerWorkspaceView({
       )
       .on(
         'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'channel_messages', filter: `channel_id=eq.${activeChannel.id}` },
+        (payload) => {
+          const updated = payload.new as ChannelMessage;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === updated.id ? { ...m, content: updated.content, edited_at: updated.edited_at } : m
+            )
+          );
+        }
+      )
+      .on(
+        'postgres_changes',
         { event: 'DELETE', schema: 'public', table: 'channel_messages', filter: `channel_id=eq.${activeChannel.id}` },
         (payload) => {
           const oldId = (payload.old as { id?: string })?.id;
@@ -349,11 +375,12 @@ export function ServerWorkspaceView({
 
       let uploadedAttachments: AttachmentRecord[] = [];
       if (pendingFile) {
+        const file = withResolvedType(pendingFile);
         const ext = pendingFile.name.split('.').pop() || 'bin';
         const storagePath = `${currentUser.id}/channel/${serverId}/${crypto.randomUUID()}.${ext}`;
         const { error: upErr } = await supabase.storage
           .from('chat-attachments')
-          .upload(storagePath, pendingFile, { contentType: pendingFile.type });
+          .upload(storagePath, file, { contentType: file.type });
         if (upErr) throw upErr;
 
         const { data: attRow, error: attErr } = await supabase
@@ -364,9 +391,9 @@ export function ServerWorkspaceView({
             context_id: serverId,
             message_id: msg.id,
             file_name: pendingFile.name,
-            mime_type: pendingFile.type,
-            file_size: pendingFile.size,
-            category: categorizeMime(pendingFile.type),
+            mime_type: file.type,
+            file_size: file.size,
+            category: categorizeMime(file.type),
             storage_bucket: 'chat-attachments',
             storage_path: storagePath,
           })
@@ -535,17 +562,14 @@ export function ServerWorkspaceView({
       setInviteStatus(invErr.message);
       return;
     }
-    await supabase.from('notifications').upsert(
-      {
-        recipient_id: target.id,
-        actor_id: currentUser.id,
-        type: 'server_invite',
-        entity_id: inv.id,
-        metadata: { server_name: server?.name || 'Server' },
-        dedupe_key: `srv_invite_${inv.id}`,
-      },
-      { onConflict: 'recipient_id,dedupe_key', ignoreDuplicates: true }
-    );
+    await sendNotification({
+      recipient_id: target.id,
+      actor_id: currentUser.id,
+      type: 'server_invite',
+      entity_id: inv.id,
+      metadata: { server_name: server?.name || 'Server' },
+      dedupe_key: `srv_invite_${inv.id}`,
+    });
     setInviteStatus(`Invitation sent to @${target.username}`);
     loadPendingInvites();
   };
@@ -975,7 +999,7 @@ export function ServerWorkspaceView({
                   Welcome to #{activeChannel.name}. Start the conversation below.
                 </div>
               ) : (
-                messages.map((msg) => {
+                messages.filter((m) => !blockedIds.has(m.author_id)).map((msg) => {
                   const groupedReactions = (msg.reactions || []).reduce<
                     Record<string, { count: number; mine: boolean }>
                   >((acc, r) => {
@@ -1013,12 +1037,28 @@ export function ServerWorkspaceView({
                           <time className="font-mono text-[11px] text-[#6B7280]">
                             {formatTimeClock(msg.created_at)} · {formatRelativeTime(msg.created_at)}
                           </time>
+                          {msg.edited_at && <span className="text-[11px] text-[#6B7280]">(edited)</span>}
                         </div>
 
-                        {msg.content && (
-                          <div className="text-sm text-[#E5E7EB]">
-                            <RichTextWithEmojis text={msg.content} globalEmojis={globalEmojis} />
-                          </div>
+                        {editingId === msg.id ? (
+                          <MessageEditor
+                            table="channel_messages"
+                            messageId={msg.id}
+                            initial={msg.content}
+                            onCancel={() => setEditingId(null)}
+                            onSaved={(content, editedAt) => {
+                              setMessages((prev) =>
+                                prev.map((m) => (m.id === msg.id ? { ...m, content, edited_at: editedAt } : m))
+                              );
+                              setEditingId(null);
+                            }}
+                          />
+                        ) : (
+                          msg.content && (
+                            <div className="text-sm text-[#E5E7EB]">
+                              <RichTextWithEmojis text={msg.content} globalEmojis={globalEmojis} />
+                            </div>
+                          )
                         )}
 
                         {msg.attachments && msg.attachments.length > 0 && (
@@ -1050,7 +1090,26 @@ export function ServerWorkspaceView({
                         )}
                       </div>
 
-                      <div className="opacity-0 group-hover:opacity-100 flex items-center gap-0.5 transition-opacity">
+                      <div className="sm:opacity-0 group-hover:opacity-100 focus-within:opacity-100 flex items-center gap-0.5 transition-opacity">
+                        {msg.author_id === currentUser.id ? (
+                          <button
+                            type="button"
+                            onClick={() => setEditingId(msg.id)}
+                            className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-white hover:bg-white/5"
+                            title="Edit message"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => report('channel_message', msg.id)}
+                            className="p-1.5 rounded-lg text-[#9CA3AF] hover:text-[#EF4444] hover:bg-white/5"
+                            title="Report message"
+                          >
+                            <Flag className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                         <button
                           type="button"
                           onClick={() =>
@@ -1143,11 +1202,12 @@ export function ServerWorkspaceView({
                   <Smile className="w-4 h-4" />
                 </button>
 
-                <input
+                <MentionInput
+                  wrapperClassName="flex-1"
                   type="text"
                   value={text}
-                  onChange={(e) => {
-                    setText(e.target.value);
+                  onValueChange={(value) => {
+                    setText(value);
                     getSupabase()
                       .channel(`text-ch:${activeChannel.id}`)
                       .send({
@@ -1158,7 +1218,7 @@ export function ServerWorkspaceView({
                   }}
                   placeholder={`Message #${activeChannel.name}...`}
                   maxLength={4000}
-                  className="flex-1 bg-transparent text-sm text-white placeholder-[#6B7280] focus:outline-none"
+                  className="w-full bg-transparent text-sm text-white placeholder-[#6B7280] focus:outline-none"
                 />
 
                 <button

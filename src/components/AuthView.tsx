@@ -12,7 +12,7 @@ import {
   Sparkles,
   XCircle,
 } from 'lucide-react';
-import { getSupabase } from '../lib/supabase';
+import { authLinkError, getSupabase } from '../lib/supabase';
 import { validateUsername } from '../lib/utils';
 import { VesperLogoMark } from './VesperLogo';
 
@@ -34,7 +34,7 @@ export function AuthView({ onOpenSetup }: AuthViewProps) {
   >('idle');
   const [usernameHint, setUsernameHint] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(authLinkError);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Live debounced @username availability check during sign-up
@@ -81,6 +81,22 @@ export function AuthView({ onOpenSetup }: AuthViewProps) {
       window.clearTimeout(timer);
     };
   }, [mode, username]);
+
+  const handleForgotPassword = async () => {
+    setError(null);
+    setNotice(null);
+    if (!email.trim()) {
+      setError('Type your email address first, then press "Forgot password?".');
+      return;
+    }
+    setLoading(true);
+    const { error: resetError } = await getSupabase().auth.resetPasswordForEmail(email.trim(), {
+      redirectTo: `${window.location.origin}${import.meta.env.BASE_URL}`,
+    });
+    setLoading(false);
+    if (resetError) setError(resetError.message);
+    else setNotice('If an account exists for that address, a reset link is on its way.');
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -400,6 +416,19 @@ export function AuthView({ onOpenSetup }: AuthViewProps) {
                   </button>
                 </div>
               </div>
+
+              {mode === 'login' && (
+                <div className="flex justify-end -mt-2">
+                  <button
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={loading}
+                    className="text-xs text-[#7C96FF] hover:underline"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+              )}
 
               <AnimatePresence>
                 {error && (

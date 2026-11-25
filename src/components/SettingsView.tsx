@@ -1,20 +1,41 @@
 import React, { useEffect, useState } from 'react';
-import { LogOut, RefreshCw, Shield, Volume2, VolumeX } from 'lucide-react';
+import { Bell, Flag, LogOut, RefreshCw, Shield, Volume2, VolumeX } from 'lucide-react';
 import { Profile } from '../types';
 import { clearBrowserSupabaseConfig, getSupabase } from '../lib/supabase';
 import { getSoundPreference, setSoundPreference } from '../lib/utils';
+import {
+  browserNotificationsEnabled,
+  disableBrowserNotifications,
+  enableBrowserNotifications,
+} from '../lib/browserNotifications';
+import { BlockedUsers } from './BlockedUsers';
 
 interface SettingsViewProps {
   currentUser: Profile;
   onSignedOut: () => void;
   onResetConnection: () => void;
+  onOpenReports: () => void;
 }
 
 export function SettingsView({
   currentUser,
   onSignedOut,
   onResetConnection,
+  onOpenReports,
 }: SettingsViewProps) {
+  const [notificationsOn, setNotificationsOn] = useState(browserNotificationsEnabled());
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const toggleNotifications = async () => {
+    setNotificationError(null);
+    if (notificationsOn) {
+      disableBrowserNotifications();
+      setNotificationsOn(false);
+      return;
+    }
+    const message = await enableBrowserNotifications();
+    setNotificationError(message);
+    setNotificationsOn(!message);
+  };
   const [soundEnabled, setSoundEnabled] = useState(getSoundPreference());
   const [health, setHealth] = useState<{
     supabaseConfigured: boolean;
@@ -106,6 +127,41 @@ export function SettingsView({
           {soundEnabled ? 'Enabled' : 'Muted'}
         </button>
       </div>
+
+      {/* Browser notifications */}
+      <div className="bg-[#12151C] border border-white/8 rounded-2xl p-5 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <Bell className={`w-5 h-5 shrink-0 ${notificationsOn ? 'text-[#5B7CFA]' : 'text-[#9CA3AF]'}`} />
+          <div>
+            <div className="text-sm font-semibold text-white">Browser Notifications</div>
+            <div className="text-xs text-[#9CA3AF]">
+              Alerts for new DMs and mentions while DompicMEDIA is open in a tab.
+            </div>
+            {notificationError && <div className="text-xs text-[#FCA5A5] mt-1">{notificationError}</div>}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={toggleNotifications}
+          className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap ${
+            notificationsOn ? 'bg-[#5B7CFA] text-white' : 'bg-[#181C25] border border-white/10 text-[#D1D5DB]'
+          }`}
+        >
+          {notificationsOn ? 'Enabled' : 'Enable'}
+        </button>
+      </div>
+
+      <BlockedUsers />
+
+      {currentUser.platform_role === 'platform_admin' && (
+        <button
+          type="button"
+          onClick={onOpenReports}
+          className="w-full bg-[#12151C] border border-white/8 hover:border-white/20 rounded-2xl p-5 flex items-center gap-3 text-sm font-semibold text-white"
+        >
+          <Flag className="w-5 h-5 text-[#EF4444]" /> Review reports
+        </button>
+      )}
 
       {/* Infrastructure Status */}
       {health && (

@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { Search, Smile } from 'lucide-react';
 import { GlobalEmoji } from '../types';
 import { BUILTIN_EMOJIS } from '../lib/utils';
+import { useAppActions } from '../lib/appContext';
 
 export function resolveEmojiUrl(shortcode: string, globalEmojis: GlobalEmoji[]): string | null {
   const clean = shortcode.toLowerCase();
@@ -47,6 +48,7 @@ export function CustomEmojiImg({
 }
 
 const EMOJI_TOKEN_RE = /(:[a-z0-9_]{2,32}:)/gi;
+const LINK_TOKEN_RE = /(@[A-Za-z0-9_]{3,24}(?![A-Za-z0-9_])|#[\p{L}\p{N}_]+)/gu;
 
 export function RichTextWithEmojis({
   text,
@@ -58,6 +60,34 @@ export function RichTextWithEmojis({
   onMentionClick?: (username: string) => void;
 }) {
   const parts = useMemo(() => text.split(EMOJI_TOKEN_RE), [text]);
+  const actions = useAppActions();
+  const openMention = onMentionClick || actions.openProfileByUsername;
+
+  /** Turns @usernames and #hashtags into buttons. Text glued to a word (a@b.com) stays plain. */
+  const linkify = (segment: string) => {
+    const tokens = segment.split(LINK_TOKEN_RE);
+    return tokens.map((token, i) => {
+      // Capturing split: odd indexes are the matched tokens.
+      const previous = i > 0 ? tokens[i - 1] : '';
+      if (i % 2 === 0 || /[\p{L}\p{N}_]$/u.test(previous)) {
+        return <React.Fragment key={i}>{token}</React.Fragment>;
+      }
+      return (
+        <button
+          key={i}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (token.startsWith('@')) openMention(token.slice(1).toLowerCase());
+            else actions.openHashtag(token);
+          }}
+          className="text-[#7C96FF] hover:underline font-medium"
+        >
+          {token}
+        </button>
+      );
+    });
+  };
 
   return (
     <span className="whitespace-pre-wrap break-words leading-relaxed">
@@ -77,33 +107,7 @@ export function RichTextWithEmojis({
             );
           }
         }
-        if (onMentionClick) {
-          const mentionParts = part.split(/(@[a-z0-9_]{3,24})/gi);
-          return (
-            <React.Fragment key={idx}>
-              {mentionParts.map((mp, mIdx) => {
-                if (mp.startsWith('@') && mp.length >= 4) {
-                  const uname = mp.slice(1).toLowerCase();
-                  return (
-                    <button
-                      key={mIdx}
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onMentionClick(uname);
-                      }}
-                      className="text-[#7C96FF] hover:underline font-medium"
-                    >
-                      {mp}
-                    </button>
-                  );
-                }
-                return <React.Fragment key={mIdx}>{mp}</React.Fragment>;
-              })}
-            </React.Fragment>
-          );
-        }
-        return <React.Fragment key={idx}>{part}</React.Fragment>;
+        return <React.Fragment key={idx}>{linkify(part)}</React.Fragment>;
       })}
     </span>
   );

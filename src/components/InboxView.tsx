@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Bell, Check, CheckCheck, Loader2, Server as ServerIcon, UserPlus, X } from 'lucide-react';
-import { FriendRequest, NotificationItem, Profile, ServerInvitation } from '../types';
+import { AppView, FriendRequest, NotificationItem, Profile, ServerInvitation } from '../types';
 import { getSupabase } from '../lib/supabase';
 import { formatRelativeTime } from '../lib/utils';
 import { Avatar } from './Avatar';
@@ -9,14 +9,17 @@ interface InboxViewProps {
   currentUser: Profile;
   onOpenProfile: (userId: string) => void;
   onJoinedServer: (serverId: string) => void;
-  onUnreadCountChange: (count: number) => void;
+  /** Tells the app to recount the unread badges. */
+  onChanged: () => void;
+  navigate: (view: AppView) => void;
 }
 
 export function InboxView({
   currentUser,
   onOpenProfile,
   onJoinedServer,
-  onUnreadCountChange,
+  onChanged,
+  navigate,
 }: InboxViewProps) {
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [serverInvites, setServerInvites] = useState<ServerInvitation[]>([]);
@@ -26,7 +29,6 @@ export function InboxView({
   const [error, setError] = useState<string | null>(null);
 
   const loadInbox = useCallback(async () => {
-    setLoading(true);
     try {
       const supabase = getSupabase();
       const [frRes, invRes, notifRes] = await Promise.all([
@@ -57,13 +59,11 @@ export function InboxView({
       setFriendRequests(frs);
       setServerInvites(invs);
       setNotifications(notifs);
-
-      const unreadNotifs = notifs.filter((n) => !n.read_at).length;
-      onUnreadCountChange(unreadNotifs + frs.length + invs.length);
+      onChanged();
     } finally {
       setLoading(false);
     }
-  }, [currentUser.id, onUnreadCountChange]);
+  }, [currentUser.id, onChanged]);
 
   useEffect(() => {
     loadInbox();
@@ -147,7 +147,7 @@ export function InboxView({
       .eq('recipient_id', currentUser.id)
       .is('read_at', null);
     setNotifications((prev) => prev.map((n) => ({ ...n, read_at: n.read_at || now })));
-    onUnreadCountChange(friendRequests.length + serverInvites.length);
+    onChanged();
   };
 
   const markRead = async (id: string) => {
@@ -155,6 +155,22 @@ export function InboxView({
     const now = new Date().toISOString();
     await supabase.from('notifications').update({ read_at: now }).eq('id', id);
     setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, read_at: now } : n)));
+    onChanged();
+  };
+
+  const openNotification = (n: NotificationItem) => {
+    if (!n.read_at) markRead(n.id);
+    if (n.type === 'mention' && n.metadata?.context === 'channel') {
+      navigate({
+        kind: 'server',
+        serverId: String(n.metadata.server_id),
+        channelId: String(n.metadata.channel_id),
+      });
+    } else if (['mention', 'post_like', 'post_reply', 'post_repost'].includes(n.type) && n.entity_id) {
+      navigate({ kind: 'post', postId: n.entity_id });
+    } else if (n.type === 'friend_accepted' && n.actor_id) {
+      onOpenProfile(n.actor_id);
+    }
   };
 
   const describeNotification = (n: NotificationItem): string => {
@@ -330,7 +346,7 @@ export function InboxView({
                 {notifications.map((n) => (
                   <div
                     key={n.id}
-                    onClick={() => !n.read_at && markRead(n.id)}
+                    onClick={() => openNotification(n)}
                     className={`p-4 flex items-center justify-between gap-3 cursor-pointer transition-colors ${
                       n.read_at ? 'opacity-75 hover:bg-white/[0.015]' : 'bg-[#5B7CFA]/[0.06] hover:bg-[#5B7CFA]/[0.09]'
                     }`}
@@ -343,7 +359,10 @@ export function InboxView({
                       />
                       <div className="min-w-0">
                         <p className="text-xs text-[#F3F4F6] truncate">{describeNotification(n)}</p>
-                        <time className="text-[11px] font-mono text-[#9CA3AF]">
+                        {typeof n.metadata?.preview === 'string' && n.metadata.preview && (
+                          <p className="text-[11px] text-[#D1D5DB] truncate">“{n.metadata.preview}”</p>
+                        )}
+                        <time className="block text-[11px] font-mono text-[#9CA3AF]">
                           {formatRelativeTime(n.created_at)}
                         </time>
                       </div>

@@ -83,13 +83,10 @@ export function playSound(name: SoundName, forceEnabled?: boolean): boolean {
   const enabled = forceEnabled !== undefined ? forceEnabled : getSoundPreference();
   if (!enabled) return false;
 
-  const url = soundsMap[name];
-  if (!url) {
-    void loadSoundsManifest(true).then(() => {
-      preloadSounds();
-    });
-    return false;
-  }
+  // Use the manifest URL when available, but never make a click sound depend on
+  // the manifest request having completed. The audio files are also copied to
+  // the site's /Sounds directory during the static build.
+  const url = soundsMap[name] || resolveAssetUrl(`Sounds/${name}.mp3`);
 
   let audio = audioCache.get(name);
   if (!audio || audio.src !== new URL(url, window.location.href).href) {

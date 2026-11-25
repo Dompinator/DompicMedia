@@ -122,24 +122,7 @@ export async function validatePng128x128(file: File): Promise<string | null> {
   });
 }
 
-export const BUILTIN_EMOJIS = [
-  'laugh',
-  'heart',
-  'fire',
-  'sparkles',
-  'cool',
-  'shock',
-  'cry',
-  'thumbsup',
-  'rocket',
-  'check',
-  'crown',
-  'wave',
-  'party',
-  'eyes',
-  '100',
-  'mindblown',
-] as const;
+export { BUILTIN_EMOJIS } from './generated-emojis';
 
 const SOUND_PREF_KEY = 'vesper_startup_sound_enabled';
 

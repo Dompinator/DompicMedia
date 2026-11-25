@@ -31,6 +31,7 @@ import {
   VoiceParticipant,
 } from '../types';
 import { getSupabase } from '../lib/supabase';
+import { playSound } from '../lib/sounds';
 import {
   categorizeMime,
   formatRelativeTime,

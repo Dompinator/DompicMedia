@@ -10,8 +10,11 @@ export type SoundName =
   | 'post'
   | 'like';
 
-let soundsMap: Partial<Record<SoundName, string>> = {};
-let loadPromise: Promise<Partial<Record<SoundName, string>>> | null = null;
+type SoundMap = Partial<Record<SoundName, string>>;
+
+let soundsMap: SoundMap = {};
+let loadPromise: Promise<SoundMap> | null = null;
+const audioCache = new Map<SoundName, HTMLAudioElement>();
 
 function resolveAssetUrl(raw: string): string {
   if (/^https?:\/\//i.test(raw)) return raw;
@@ -20,45 +23,41 @@ function resolveAssetUrl(raw: string): string {
   return `${base}${cleaned}`;
 }
 
-export async function loadSoundsManifest(force = false): Promise<Partial<Record<SoundName, string>>> {
+export async function loadSoundsManifest(force = false): Promise<SoundMap> {
   if (loadPromise && !force) return loadPromise;
 
   const base = import.meta.env.BASE_URL || '/';
   loadPromise = (async () => {
+    // GitHub Pages is static, so /api/sounds is expected to be unavailable there.
     try {
-      const apiRes = await fetch(`${base}api/sounds`);
-      const isJson = apiRes.headers.get('content-type')?.includes('application/json');
-      if (apiRes.ok && isJson) {
-        const data = (await apiRes.json()) as { sounds?: Partial<Record<SoundName, string>> };
-        const raw = data.sounds || {};
-        const resolved: Partial<Record<SoundName, string>> = {};
-        for (const [k, v] of Object.entries(raw)) {
-          if (v) resolved[k as SoundName] = resolveAssetUrl(v);
+      const response = await fetch(`${base}sounds-manifest.json?v=1`, { cache: 'no-cache' });
+      if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
+        const data = (await response.json()) as { sounds?: SoundMap };
+        const resolved: SoundMap = {};
+        for (const [key, value] of Object.entries(data.sounds || {})) {
+          if (value) resolved[key as SoundName] = resolveAssetUrl(value);
         }
         soundsMap = resolved;
         return soundsMap;
       }
     } catch {
-      // fall through to static sounds-manifest.json
+      // Try the live-server endpoint below.
     }
 
     try {
-      const staticRes = await fetch(`${base}sounds-manifest.json`);
-      const isJson = staticRes.headers.get('content-type')?.includes('application/json');
-      if (staticRes.ok && isJson) {
-        const data = (await staticRes.json()) as { sounds?: Partial<Record<SoundName, string>> };
-        const raw = data.sounds || {};
-        const resolved: Partial<Record<SoundName, string>> = {};
-        for (const [k, v] of Object.entries(raw)) {
-          if (v) resolved[k as SoundName] = resolveAssetUrl(v);
+      const response = await fetch(`${base}api/sounds`, { cache: 'no-cache' });
+      if (response.ok && response.headers.get('content-type')?.includes('application/json')) {
+        const data = (await response.json()) as { sounds?: SoundMap };
+        const resolved: SoundMap = {};
+        for (const [key, value] of Object.entries(data.sounds || {})) {
+          if (value) resolved[key as SoundName] = resolveAssetUrl(value);
         }
         soundsMap = resolved;
-        return soundsMap;
       }
     } catch {
-      // ignore missing manifest
+      // Keep an empty map; callers can retry later.
     }
-    return {};
+    return soundsMap;
   })();
 
   return loadPromise;
@@ -68,19 +67,46 @@ export function getSoundUrl(name: SoundName): string | null {
   return soundsMap[name] || null;
 }
 
+export function preloadSounds(): void {
+  for (const name of Object.keys(soundsMap) as SoundName[]) {
+    const url = soundsMap[name];
+    if (!url || audioCache.has(name)) continue;
+    const audio = new Audio(url);
+    audio.preload = 'auto';
+    audio.volume = name === 'click' ? 0.35 : 0.6;
+    audioCache.set(name, audio);
+    audio.load();
+  }
+}
+
 export function playSound(name: SoundName, forceEnabled?: boolean): boolean {
   const enabled = forceEnabled !== undefined ? forceEnabled : getSoundPreference();
   if (!enabled) return false;
 
   const url = soundsMap[name];
-  if (!url) return false;
+  if (!url) {
+    void loadSoundsManifest(true).then(() => {
+      preloadSounds();
+    });
+    return false;
+  }
+
+  let audio = audioCache.get(name);
+  if (!audio || audio.src !== new URL(url, window.location.href).href) {
+    audio = new Audio(url);
+    audio.preload = 'auto';
+    audio.volume = name === 'click' ? 0.35 : 0.6;
+    audioCache.set(name, audio);
+  }
 
   try {
-    const audio = new Audio(url);
-    audio.volume = name === 'click' ? 0.35 : 0.6;
-    audio.play().catch(() => {});
+    audio.currentTime = 0;
+    void audio.play().catch((error) => {
+      console.warn(`[DompicMEDIA] Could not play sound "${name}":`, error);
+    });
     return true;
-  } catch {
+  } catch (error) {
+    console.warn(`[DompicMEDIA] Could not play sound "${name}":`, error);
     return false;
   }
 }

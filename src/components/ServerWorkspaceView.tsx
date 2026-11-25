@@ -911,9 +911,8 @@ export function ServerWorkspaceView({
               <button
                 type="button"
                 onClick={() => {
-                  // Play the join cue immediately, then enter the voice room one second later.
                   playSound('join_call');
-                  window.setTimeout(() => setJoinedVoiceChannelId(activeChannel.id), 1000);
+                  setJoinedVoiceChannelId(activeChannel.id);
                 }}
                 className="px-5 py-2.5 rounded-xl bg-[#22C55E] hover:bg-[#16A34A] text-xs font-semibold text-white"
               >
